@@ -5,7 +5,8 @@ import logging
 from datetime import datetime
 
 from pdf_loader import chunk_text, load_pdf_paginated
-from utils.general import get_file_hash
+from utils.general import get_file_hash, get_full_document
+from langchain_core.messages import HumanMessage, AIMessage
 
 logging.getLogger("transformers").setLevel(logging.ERROR)
 logging.getLogger("sentence_transformers").setLevel(logging.ERROR)
@@ -17,7 +18,8 @@ embed_model = SentenceTransformer("all-MiniLM-L6-v2")
 client = chromadb.PersistentClient(path="chroma_db")
 collection = client.get_or_create_collection("docs")
 
-def get_files_with_upload_date():
+# TOOLS
+def get_files_with_upload_date_tool():
     data = collection.get()
 
     if not data["metadatas"]:
@@ -35,7 +37,7 @@ def get_files_with_upload_date():
 
     return file_dates
 
-def get_files_in_db():
+def get_files_in_db_tool():
     data = collection.get(include=["metadatas"])
 
     files = {}
@@ -45,9 +47,6 @@ def get_files_in_db():
     # lista pulita
     return list(files.values())
 
-def get_db_stats():
-    data = collection.get()
-    return len(data["ids"])
 
 def reset_database():
     global collection
@@ -196,10 +195,6 @@ def search_context(query, selected_doc=None, k_chunks=20):
 
     return context, structured_sources
 
-
-from langchain_core.messages import HumanMessage, AIMessage
-
-
 def build_chat_history(messages, max_turns=6):
     """
     Costruisce history compatta per il retriever usando oggetti LangChain.
@@ -218,11 +213,11 @@ def build_chat_history(messages, max_turns=6):
         else:
             role = "Sistema"
 
-        history.append(f"{role}: {msg.content}")
+        history.append(f"{role}: {msg.content.strip()}")
 
     return "\n".join(history)
 
-def conversational_search(query, messages, selected_doc=None):
+def conversational_search_tool(query, messages, selected_doc=None):
     """
     Pipeline completa conversational RAG
     """
@@ -240,6 +235,47 @@ def conversational_search(query, messages, selected_doc=None):
     context, sources = search_context(standalone_query, selected_doc)
 
     return context, sources
+
+def summarize_document_tool(file_name: str):
+    document_text = get_full_document(file_name, collection)
+
+    if not document_text:
+        return "Documento non trovato nel database."
+
+    prompt = f"""
+Sei un assistente esperto nell'analisi di documenti.
+
+Fai un riassunto chiaro e strutturato del documento.
+
+Regole:
+- Scrivi in italiano
+- Usa bullet points
+- Evidenzia le informazioni importanti
+- Non inventare nulla
+
+Documento:
+{document_text}
+"""
+
+    response = ollama.chat(
+        model="llama3",
+        messages=[{"role": "user", "content": prompt}]
+    )
+
+    return response["message"]["content"]
+
+def extract_filename_from_query(query: str):
+    files = collection.get()["metadatas"]
+    file_names = list(set([m["file"] for m in files]))
+
+    query_lower = query.lower()
+
+    for name in file_names:
+        if name.lower() in query_lower:
+            return name
+
+    # fallback → primo documento
+    return file_names[0] if file_names else None
 
 # --- FUNZIONI LLM ---
 def ask_llm(query, context):
@@ -264,35 +300,6 @@ Domanda: {query}
     )
 
     return response["message"]["content"]
-
-"""
-def direct_llm_answer(query, messages):
-    ""
-    Risposta diretta senza usare tools o RAG.
-    Serve per small talk o domande generiche.
-    ""
-
-    chat_history = build_chat_history(messages) if messages else ""
-    standalone_query = rewrite_query_with_memory(query, chat_history)
-
-    prompt = f""
-Sei un assistente AI utile e intelligente.
-Rispondi normalmente alla domanda dell'utente simpaticamente senza essere troppo conciso.
-
-Conversazione:
-{chat_history}
-
-Domanda: {standalone_query}
-""
-    stream = ollama.chat(
-        model="llama3",
-        messages=[{"role": "user", "content": prompt}],
-        stream=True
-    )
-
-    for chunk in stream:
-        yield chunk["message"]["content"]
-"""
 
 def rewrite_query_with_memory(query, chat_history):
     """

@@ -1,5 +1,6 @@
 import ollama
-from rag_engine import get_files_with_upload_date, get_files_in_db, conversational_search
+from rag_engine import get_files_with_upload_date_tool, get_files_in_db_tool, conversational_search_tool, \
+    summarize_document_tool, extract_filename_from_query
 
 TOOLS = [
     {
@@ -16,6 +17,11 @@ TOOLS = [
         "name": "get_upload_dates",
         "description": "Restituisce quando sono stati caricati i documenti",
         "input": "none"
+    },
+    {
+        "name": "summarize_document",
+        "description": "Crea un riassunto completo di un documento",
+        "input": "file_name"
     }
 ]
 
@@ -23,19 +29,24 @@ def execute_tool(tool_name: str, query: str = None, selected_doc=None, messages=
     print("tool_name", tool_name)
 
     if tool_name == "search_documents":
-        context, structured_sources = conversational_search(query, messages, selected_doc)
+        context, structured_sources = conversational_search_tool(query, messages, selected_doc)
         return {
             "context": context,
             "sources": structured_sources
         }
 
     if tool_name == "list_documents":
-        files = get_files_in_db()
+        files = get_files_in_db_tool()
         return {"files": files}
 
     if tool_name == "get_upload_dates":
-        dates = get_files_with_upload_date()
+        dates = get_files_with_upload_date_tool()
         return {"dates": dates}
+
+    if tool_name == "summarize_document":
+        # l'agente deve aver passato il nome del file nella query
+        file_name = extract_filename_from_query(query)
+        return summarize_document_tool(file_name)
 
     return {"error": "Tool non trovato"}
 

@@ -1,5 +1,6 @@
 import streamlit as st
-from rag_engine import add_documents, get_db_stats, reset_database, collection, get_file_hash
+from rag_engine import add_documents, reset_database, collection, get_file_hash
+from utils.general import get_db_stats
 import os
 import asyncio
 from nodes import *
@@ -75,7 +76,7 @@ st.set_page_config(page_title="Local RAG Chat", layout="wide")  # Titolo del tab
 st.sidebar.header("🗄️ Database")  # Titolo sidebar a sinistra
 
 # --- STATS ---
-doc_count = get_db_stats()
+doc_count = get_db_stats(collection)
 st.sidebar.write(f"Chunk salvati: **{doc_count}**")
 
 # --- DOC FILTER ---

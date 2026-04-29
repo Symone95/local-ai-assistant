@@ -70,7 +70,7 @@ Regole:
 - Mantieni la stessa lingua usata dall'utente nella risposta
 
 Contesto:
-{state.get('context', '')}
+{state.get('context', '').strip()}
 
 Conversazione:
 {chat_history}
@@ -80,7 +80,7 @@ Domanda dell'utente: {state['query']}
 Lo strumento ha restituito questi dati:
 {state.get('tool_result', '')}
         
-Rispondi in modo chiaro.
+Rispondi in modo chiaro facendo riferimento al risultato dei tool utilizzati.
 """
 
     response = llm.invoke(prompt)
