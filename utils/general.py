@@ -1,6 +1,10 @@
 import hashlib
 import re
 from chromadb.api.models.Collection import Collection
+import os
+from datetime import datetime
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet
 
 
 def group_by_file(structured_sources):
@@ -50,3 +54,51 @@ def get_full_document(file_name: str, collection: Collection):
 
     full_text = "\n\n".join([doc for doc, _ in sorted_chunks])
     return full_text
+
+
+
+def generate_pdf_report(title: str, content: str):
+    """
+    Genera un PDF nella cartella /reports e ritorna il path del file.
+    """
+
+    # crea cartella se non esiste
+    os.makedirs("reports", exist_ok=True)
+
+    # nome file con timestamp
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"reports/report_{timestamp}.pdf"
+
+    # crea documento
+    doc = SimpleDocTemplate(filename)
+    styles = getSampleStyleSheet()
+
+    story = []
+
+    # Titolo
+    story.append(Paragraph(title, styles["Title"]))
+    story.append(Spacer(1, 20))
+
+    # Data generazione
+    date_str = datetime.now().strftime("%d/%m/%Y %H:%M")
+    story.append(Paragraph(f"Generato il: {date_str}", styles["Italic"]))
+    story.append(Spacer(1, 20))
+
+    # Contenuto: splittiamo per paragrafi
+    paragraphs = content.split("\n")
+
+    for p in paragraphs:
+        if p.strip() == "":
+            story.append(Spacer(1, 12))
+        else:
+            story.append(Paragraph(p, styles["BodyText"]))
+            story.append(Spacer(1, 12))
+
+    # build pdf
+    doc.build(story)
+
+    return {
+        "status": "success",
+        "file_path": filename,
+        "message": f"PDF creato: {filename}"
+    }

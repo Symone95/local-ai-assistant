@@ -5,6 +5,11 @@ import os
 import asyncio
 from nodes import *
 from langgraph.graph import StateGraph, END
+from langchain_core.messages import HumanMessage, AIMessage
+
+from streamlit_mic_recorder import mic_recorder
+from utils.speech_to_text import transcribe_audio
+from utils.text_to_speech import generate_tts
 
 # TODO: FAR GENERARE DOCUMENTI, FAR RISPONDERE IN MARKDOWN
 
@@ -71,6 +76,7 @@ graph.add_edge("direct_llm_answer", END)
 
 app = graph.compile()
 
+## FE
 st.set_page_config(page_title="Local RAG Chat", layout="wide")  # Titolo del tab
 
 st.sidebar.header("🗄️ Database")  # Titolo sidebar a sinistra
@@ -100,7 +106,7 @@ if st.sidebar.button("🗑️ Reset database"):
     st.sidebar.success("Database cancellato!")
     st.rerun()
 
-st.title("🤖 Chat con i tuoi PDF (Ollama + ChromaDB)")
+st.title("🤖 Chat con i tuoi PDF") #  (Ollama + ChromaDB)
 
 # --- Sidebar Upload PDF ---
 st.sidebar.header("📄 Carica documento")
@@ -139,7 +145,6 @@ if "messages" not in st.session_state:
 for msg in st.session_state.messages:
     st.chat_message(msg["role"]).write(msg["content"])
 
-from langchain_core.messages import HumanMessage, AIMessage
 
 def convert_to_langchain_messages(streamlit_messages):
     lc_messages = []
@@ -153,6 +158,18 @@ def convert_to_langchain_messages(streamlit_messages):
 
 # Input utente
 query = st.chat_input("Fai una domanda sui documenti")
+# Input utente vocale
+audio = mic_recorder(
+    start_prompt="🎤 Inizia a parlare",
+    stop_prompt="⏹️ Stop",
+    just_once=True,
+    use_container_width=True,
+    key="mic_footer"
+)
+
+if audio:
+    with st.spinner("Trascrizione vocale..."):
+        query = f"🎤 {transcribe_audio(audio['bytes'])}"
 
 if query:
     st.chat_message("user").write(query)
@@ -166,6 +183,7 @@ if query:
 
     async def get_streaming_response():
         full_response = ""
+        final_state = None
         with st.spinner("Sto pensando..."), st.chat_message("assistant"):
             container = st.empty()
 
@@ -186,7 +204,24 @@ if query:
                         full_response += content
                         container.markdown(full_response + "▌")  # Cursore effetto scrittura
 
+                # 🧠 STATO FINALE DEL GRAFO
+                if event["event"] == "on_chain_end" and event["name"] == "llm":
+                    final_state = event["data"]["output"]
+
             container.markdown(full_response)  # Pulizia finale senza cursore
+            print("final_state: ", final_state)
+
+            # 🎁 SE ESISTE PDF → MOSTRA DOWNLOAD BUTTON
+            if final_state and "pdf_path" in final_state:
+                with open(final_state["pdf_path"], "rb") as file:
+                    st.download_button(
+                        label="📄 Scarica il report PDF",
+                        data=file,
+                        file_name="report.pdf",
+                        mime="application/pdf"
+                    )
+        tts_file = await generate_tts(full_response)
+        st.audio(tts_file)
         return full_response
 
 

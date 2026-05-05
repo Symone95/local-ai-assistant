@@ -340,3 +340,32 @@ Domanda standalone:
         return query
 
     return rewritten
+
+
+def generate_report_content(query: str, messages=None):
+    """
+    Fa scrivere all'LLM il contenuto del report in modo strutturato.
+    """
+
+    prompt = f"""
+Sei un assistente che scrive report professionali.
+
+Scrivi un report ben strutturato in italiano con:
+- Titolo
+- Introduzione
+- Sezioni con sottotitoli
+- Conclusione
+
+Argomento del report:
+{query}
+
+Produci SOLO il testo del report in markdown.
+"""
+
+    response = ollama.chat(
+        model="llama3",
+        messages=[{"role": "user", "content": prompt}]
+    )
+
+    report_text = response["message"]["content"]
+    return report_text

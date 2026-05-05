@@ -24,6 +24,14 @@ def tool_node(state: AgentState):
     query = state["query"]
     messages = state.get("messages", [])
     result = execute_tool(tool_name, query, selected_doc=state.get("selected_doc"), messages=messages)
+
+    # Se abbiamo generato un PDF NON serve far parlare l'LLM
+    if result and "pdf" in result:
+        return {
+            "final_answer": "Ho creato il report PDF! Scaricalo qui sotto 👇",
+            "pdf_path": result["pdf"]
+        }
+
     return {"tool_result": result}
 
 

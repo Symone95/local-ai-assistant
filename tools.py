@@ -1,6 +1,7 @@
 import ollama
 from rag_engine import get_files_with_upload_date_tool, get_files_in_db_tool, conversational_search_tool, \
-    summarize_document_tool, extract_filename_from_query
+    summarize_document_tool, extract_filename_from_query, generate_report_content
+from utils.general import generate_pdf_report
 
 TOOLS = [
     {
@@ -22,6 +23,11 @@ TOOLS = [
         "name": "summarize_document",
         "description": "Crea un riassunto completo di un documento",
         "input": "file_name"
+    },
+    {
+        "name": "generate_pdf_report",
+        "description": "Genera un report PDF professionale su qualsiasi argomento",
+        "input": "title, content"
     }
 ]
 
@@ -47,6 +53,20 @@ def execute_tool(tool_name: str, query: str = None, selected_doc=None, messages=
         # l'agente deve aver passato il nome del file nella query
         file_name = extract_filename_from_query(query)
         return summarize_document_tool(file_name)
+
+    if tool_name == "generate_pdf_report":
+        print("✍️ Genero contenuto report con LLM...")
+
+        report_markdown = generate_report_content(query, messages)
+
+        print("📄 Creo PDF...")
+
+        pdf_result = generate_pdf_report(title="AI Generated Report", content=report_markdown)
+
+        return {
+            "report_text": report_markdown,
+            "pdf": pdf_result
+        }
 
     return {"error": "Tool non trovato"}
 
