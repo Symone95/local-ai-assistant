@@ -3,9 +3,18 @@ import re
 from chromadb.api.models.Collection import Collection
 import os
 from datetime import datetime
+from langchain_core.messages import HumanMessage, AIMessage
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
 
+def convert_to_langchain_messages(streamlit_messages):
+    lc_messages = []
+    for m in streamlit_messages:
+        if m["role"] == "user":
+            lc_messages.append(HumanMessage(content=m["content"]))
+        elif m["role"] == "assistant":
+            lc_messages.append(AIMessage(content=m["content"]))
+    return lc_messages
 
 def group_by_file(structured_sources):
     files = {}
@@ -55,8 +64,6 @@ def get_full_document(file_name: str, collection: Collection):
     full_text = "\n\n".join([doc for doc, _ in sorted_chunks])
     return full_text
 
-
-
 def generate_pdf_report(title: str, content: str):
     """
     Genera un PDF nella cartella /reports e ritorna il path del file.
@@ -102,3 +109,40 @@ def generate_pdf_report(title: str, content: str):
         "file_path": filename,
         "message": f"PDF creato: {filename}"
     }
+
+
+import subprocess
+
+def run_ansible_playbook(playbook_path: str, inventory_path: str = "inventory.ini"):
+    cmd = [
+        "ansible-playbook --check",
+        "-i", inventory_path,
+        playbook_path
+    ]
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+
+    return {
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+        "return_code": result.returncode
+    }
+
+def save_ansible_playbook(name: str, content: str):
+    os.makedirs("ansible_memory", exist_ok=True)
+
+    path = f"ansible_memory/{name}.yml"
+
+    with open(path, "w") as f:
+        f.write(content)
+
+    return {"saved_path": path}
+
+
+def get_ansible_playbooks():
+    import os
+
+    if not os.path.exists("ansible_memory"):
+        return []
+
+    return os.listdir("ansible_memory")

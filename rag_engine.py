@@ -167,6 +167,12 @@ def search_context(query, selected_doc=None, k_chunks=20):
 
     # 3️⃣ GROUP + SORT + MERGE CHUNKS → DOCUMENTI
     merged_docs = merge_chunks_by_file(documents, metadatas)
+    texts = [d["text"] for d in merged_docs]
+
+    # 🔥 RERANKING
+    texts = rerank_chunks(query, texts)
+
+    merged_docs = [{"file": "merged", "text": t} for t in texts]
 
     # 4️⃣ COSTRUZIONE CONTEXT + SOURCES
     context_blocks = []
@@ -369,3 +375,63 @@ Produci SOLO il testo del report in markdown.
 
     report_text = response["message"]["content"]
     return report_text
+
+
+def rerank_chunks(query, chunks):
+    scored = []
+
+    for c in chunks:
+        prompt = f"""
+Valuta quanto questo testo risponde alla domanda.
+
+Domanda: {query}
+
+Testo:
+{c}
+
+Rispondi SOLO con un numero da 0 a 10.
+"""
+
+        res = ollama.chat(
+            model="llama3",
+            messages=[{"role": "user", "content": prompt}]
+        )
+
+        try:
+            score = float(res["message"]["content"].strip())
+        except:
+            score = 0
+
+        scored.append((score, c))
+
+    # ordina per rilevanza
+    scored.sort(key=lambda x: x[0], reverse=True)
+    print("RERANK FATTO")
+
+    return [c for score, c in scored[:5]]
+
+
+def generate_ansible_playbook(query: str):
+    prompt = f"""
+Sei un esperto DevOps.
+
+Genera un playbook Ansible valido.
+
+Regole:
+- SOLO YAML
+- Niente spiegazioni
+- Compatibile Ansible 2.14+
+- Usa hosts: local se non specificato
+
+Task:
+{query}
+"""
+
+    response = ollama.chat(
+        model="llama3",
+        messages=[{"role": "user", "content": prompt}]
+    )
+
+    return {
+        "playbook": response["message"]["content"]
+    }
