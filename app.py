@@ -1,11 +1,11 @@
 import streamlit as st
 from rag_engine import add_documents, reset_database, collection, get_file_hash
-from utils.general import get_db_stats
+from utils.general import get_db_stats, convert_to_langchain_messages
 import os
 import asyncio
 from nodes import *
 from langgraph.graph import StateGraph, END
-from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.messages import HumanMessage
 
 from streamlit_mic_recorder import mic_recorder
 from utils.speech_to_text import transcribe_audio
@@ -79,6 +79,18 @@ app = graph.compile()
 ## FE
 st.set_page_config(page_title="Local RAG Chat", layout="wide")  # Titolo del tab
 
+# TODO: INTEGRARE QUESTA PARTE PER CONVERSARE DIRETTAMENTE CON LLM
+#if "assistant_speaking" not in st.session_state:
+#    st.session_state.assistant_speaking = False
+
+#if "voice_mode" not in st.session_state:
+#    st.session_state.voice_mode = False
+
+#st.session_state.voice_mode = st.toggle(
+#    "🎙️ Modalità conversazione vocale continua",
+#    value=st.session_state.voice_mode
+#)
+
 st.sidebar.header("🗄️ Database")  # Titolo sidebar a sinistra
 
 # --- STATS ---
@@ -146,16 +158,6 @@ for msg in st.session_state.messages:
     st.chat_message(msg["role"]).write(msg["content"])
 
 
-def convert_to_langchain_messages(streamlit_messages):
-    lc_messages = []
-    for m in streamlit_messages:
-        if m["role"] == "user":
-            lc_messages.append(HumanMessage(content=m["content"]))
-        elif m["role"] == "assistant":
-            lc_messages.append(AIMessage(content=m["content"]))
-    return lc_messages
-
-
 # Input utente
 query = st.chat_input("Fai una domanda sui documenti")
 # Input utente vocale
@@ -196,6 +198,7 @@ if query:
                 "tool_result": {},
                 "final_answer": ""
             }, version="v2"):
+                # print("event: ", event["event"])
 
                 # Cerchiamo l'evento di streaming del modello chat
                 if event["event"] == "on_chat_model_stream":

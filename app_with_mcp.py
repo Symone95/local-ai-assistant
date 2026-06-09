@@ -192,10 +192,31 @@ if query:
 
     current_messages = list(st.session_state.messages)
 
+    with st.expander("Ragionamenti in corso", expanded=False) as reasoning_expander:
+        reasoning_panel = reasoning_expander.empty()
+    reasoning_lines = ["🧠 Inizio elaborazione della richiesta..."]
+    reasoning_panel.markdown(
+        "<div style='background:rgba(0,0,0,0.05); padding:12px; border-radius:10px; color:#111;'>"
+        + "<strong>Ragionamenti in corso:</strong><br>"
+        + "<br>".join([f"- {line}" for line in reasoning_lines])
+        + "</div>",
+        unsafe_allow_html=True,
+    )
 
     async def get_streaming_response():
         full_response = ""
         final_state = None
+
+        def append_reasoning(line: str):
+            reasoning_lines.append(line)
+            reasoning_panel.markdown(
+                "<div style='background:rgba(0,0,0,0.05); padding:12px; border-radius:10px; color:#111;'>"
+                + "<strong>Ragionamenti in corso:</strong><br>"
+                + "<br>".join([f"- {item}" for item in reasoning_lines])
+                + "</div>",
+                unsafe_allow_html=True,
+            )
+
         with st.spinner("Sto pensando..."), st.chat_message("assistant"):
             # 1. Creiamo i segnaposto grafici DENTRO il messaggio dell'assistente
             mcp_log_placeholder = st.empty()
@@ -218,11 +239,30 @@ if query:
                     if event["name"] == "mcp_log":
                         log_text = event["data"].get("text", "")
                         mcp_log_placeholder.caption(f"⚙️ **Status Tool:** {log_text}")
+                        append_reasoning(f"Tool: {log_text}")
 
                     # Se il server MCP ha inviato una percentuale di avanzamento
                     elif event["name"] == "mcp_progress":
                         pct = event["data"].get("percentage", 0)
                         mcp_progress_placeholder.progress(pct, text=f"Elaborazione Tool: {pct}%")
+                        append_reasoning(f"Avanzamento tool: {pct}%")
+
+                # ── 🔄 EVENTI DI CATENA ──
+                if event["event"] == "on_chain_start":
+                    name = event.get("name", "")
+                    if name:
+                        append_reasoning(f"Avvio nodo/chain: {name}")
+                    else:
+                        append_reasoning("Avvio elaborazione catena")
+
+                if event["event"] == "on_chain_end":
+                    name = event.get("name", "")
+                    if name:
+                        append_reasoning(f"Nodo/chain completato: {name}")
+                    else:
+                        append_reasoning("Elaborazione catena completata")
+                    if event.get("name") == "llm":
+                        final_state = event["data"].get("output") if isinstance(event["data"], dict) else None
 
                 # ── ✍️ STREAMING DEL TESTO DELL'LLM ──
                 if event["event"] == "on_chat_model_stream":
@@ -234,15 +274,14 @@ if query:
                     if content:
                         full_response += content
                         container.markdown(full_response + "▌")  # Cursore effetto scrittura
-
-                # 🧠 STATO FINALE DEL GRAFO
-                if event["event"] == "on_chain_end" and event["name"] == "llm":
-                    final_state = event["data"]["output"]
+                        if len(reasoning_lines) == 1:
+                            append_reasoning("Generazione della risposta in corso...")
 
             # Pulizia finale di sicurezza per i widget e il testo
             mcp_log_placeholder.empty()
             mcp_progress_placeholder.empty()
             container.markdown(full_response)
+            append_reasoning("Elaborazione completata.")
             print("final_state: ", final_state)
 
             # 🎁 SE ESISTE PDF → MOSTRA DOWNLOAD BUTTON
