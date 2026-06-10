@@ -9,9 +9,10 @@ llm = ChatOllama(model="qwen2.5-coder:3b",  # llama3")
 
 
 def router_node(state: AgentState):
-    # Passa anche i messaggi al tool_planner per considerare il contesto conversazionale
+    # Passa anche i messaggi e il contesto al tool_planner per considerare il file temporaneo caricato
     messages = state.get("messages", [])
-    plan = tool_planner(state["query"], messages=messages)
+    context = state.get("context", "")
+    plan = tool_planner(state["query"], messages=messages, context=context)
 
     try:
         plan = json.loads(plan)
@@ -26,7 +27,13 @@ def tool_node(state: AgentState):
     tool_name = state["tool_plan"]["tool"]
     query = state["query"]
     messages = state.get("messages", [])
-    result = execute_tool(tool_name, query, selected_doc=state.get("selected_doc"), messages=messages)
+    result = execute_tool(
+        tool_name,
+        query,
+        selected_doc=state.get("selected_doc"),
+        messages=messages,
+        context=state.get("context", "")
+    )
 
     # Se abbiamo generato un PDF NON serve far parlare l'LLM
     if result and "pdf" in result:
@@ -49,6 +56,8 @@ def direct_llm_answer(state: AgentState):
     chat_history = build_chat_history(messages) if messages else ""
     standalone_query = rewrite_query_with_memory(query, chat_history)
 
+    context = state.get('context', '').strip()
+
     prompt = f"""
 Sei un assistente AI utile, simpatico e intelligente.
 
@@ -68,6 +77,9 @@ COSA NON FARE:
 
 Conversazione precedente:
 {chat_history if chat_history else "(nessuna conversazione precedente)"}
+
+Contesto temporaneo:
+{context if context else "(nessun file temporaneo caricato)"}
 
 Domanda attuale: {standalone_query}
 """

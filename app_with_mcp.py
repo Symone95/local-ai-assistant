@@ -2,7 +2,7 @@ import streamlit as st
 
 from mcp_client import mcp_tool_node
 from rag_engine import add_documents, reset_database, collection, get_file_hash
-from utils.general import get_db_stats, convert_to_langchain_messages
+from utils.general import get_db_stats, convert_to_langchain_messages, load_file_text
 import os
 import asyncio
 from nodes import *
@@ -158,6 +158,44 @@ if uploaded_files:
 
         st.sidebar.success("Documenti indicizzati!")
 
+# --- Sidebar Temporary File Reader ---
+st.sidebar.header("📂 Carica file temporaneo")
+
+temp_file = st.sidebar.file_uploader(
+    "Carica PDF, TXT, CSV o Excel per lettura temporanea",
+    type=["pdf", "txt", "md", "csv", "xls", "xlsx"],
+    accept_multiple_files=False,
+    key="temp_upload"
+)
+
+if "temp_file" not in st.session_state:
+    st.session_state.temp_file = None
+
+if temp_file:
+    temp_text = load_file_text(temp_file)
+    st.session_state.temp_file = {
+        "name": temp_file.name,
+        "content": temp_text,
+        "type": temp_file.type,
+    }
+    st.sidebar.success(f"File temporaneo caricato: {temp_file.name}")
+    file_content_limit = 300
+    if temp_text:
+        st.sidebar.write(temp_text[:file_content_limit] + ("..." if len(temp_text) > file_content_limit else ""))
+    else:
+        st.sidebar.warning("Impossibile leggere il file temporaneo.")
+
+if st.session_state.get("temp_file"):
+    # use_temp_context = st.sidebar.checkbox(
+    #     "Usa il file temporaneo in questa richiesta",
+    #     value=True,
+    #     key="use_temp_context",
+    #     help="Se attivo, il contenuto del file temporaneo sarà passato come contesto al modello."
+    # )
+    if st.sidebar.button("🗑️ Rimuovi file temporaneo"):
+        st.session_state.temp_file = None
+        st.experimental_rerun()
+
 # --- Chat history ---
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -184,6 +222,28 @@ if audio:
 
 if query:
     st.chat_message("user").write(query)
+
+    temp_file_context = st.session_state.get("temp_file", {})
+    use_temp_context = st.session_state.get("use_temp_context", True)
+    context_text = ""
+
+    if temp_file_context:
+        # Se l'utente parla esplicitamente del file, includo comunque il contesto.
+        query_lower = query.lower()
+        file_keywords = ["file", "caricato", "questo file", "file temporaneo", "contenuto del file", "nel file", "documento", "allegato"]
+        if any(keyword in query_lower for keyword in file_keywords):
+            use_temp_context = True
+            st.info(f"Contesto temporaneo caricato: {temp_file_context['name']}")
+        elif use_temp_context:
+            st.info(f"Contesto temporaneo attivo: {temp_file_context['name']}")
+        else:
+            st.info(f"File temporaneo caricato ma non incluso in questa richiesta.")
+
+        if use_temp_context:
+            context_text = (
+                f"File temporaneo: {temp_file_context['name']}\n"
+                + temp_file_context.get("content", "")
+            )
 
     # Prepariamo i messaggi per LangGraph
     # Includiamo i messaggi precedenti + la query attuale convertita in HumanMessage, distinguendoli tra messaggi scritti dall'utente con quelli scritti dal sistema
@@ -227,7 +287,7 @@ if query:
             async for event in app.astream_events({
                 "query": query,
                 "messages": history + [current_query_msg],
-                "context": "",
+                "context": context_text,
                 "selected_doc": selected_doc,
                 "tool_result": {},
                 "final_answer": ""
@@ -307,7 +367,7 @@ if query:
             async for event in app.astream_events({
                 "query": query,
                 "messages": history + [current_query_msg],
-                "context": "",
+                "context": context_text,
                 "selected_doc": selected_doc,
                 "tool_result": {},
                 "final_answer": ""

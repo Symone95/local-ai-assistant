@@ -7,6 +7,9 @@ from langchain_core.messages import HumanMessage, AIMessage
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
 
+import pandas as pd
+from pdf_loader import load_pdf
+
 def convert_to_langchain_messages(streamlit_messages):
     lc_messages = []
     for m in streamlit_messages:
@@ -63,6 +66,49 @@ def get_full_document(file_name: str, collection: Collection):
 
     full_text = "\n\n".join([doc for doc, _ in sorted_chunks])
     return full_text
+
+def load_file_text(uploaded_file, max_chars: int = 20000):
+    """
+    Legge un file temporaneo da usare come contesto di lettura.
+    Supporta PDF, TXT, MD, CSV, XLS e XLSX.
+    """
+    uploaded_file.seek(0)
+    filename = getattr(uploaded_file, "name", "")
+    ext = os.path.splitext(filename)[1].lower()
+
+    if ext == ".pdf":
+        text = load_pdf(uploaded_file)
+    elif ext in {".txt", ".md"}:
+        raw = uploaded_file.read()
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            text = raw.decode("latin-1", errors="ignore")
+    elif ext == ".csv":
+        try:
+            df = pd.read_csv(uploaded_file)
+            text = df.to_string(index=False)
+        except Exception:
+            uploaded_file.seek(0)
+            raw = uploaded_file.read()
+            try:
+                text = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                text = raw.decode("latin-1", errors="ignore")
+    elif ext in {".xls", ".xlsx"}:
+        try:
+            df = pd.read_excel(uploaded_file)
+            text = df.to_string(index=False)
+        except Exception:
+            text = ""
+    else:
+        text = ""
+
+    text = text.strip()
+    if len(text) > max_chars:
+        text = text[:max_chars] + "\n\n...[troncato]"
+    return text
+
 
 def generate_pdf_report(title: str, content: str):
     """

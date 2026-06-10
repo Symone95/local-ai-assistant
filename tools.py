@@ -52,14 +52,14 @@ TOOLS = [
 ]
 
 # TODO: SPOSTARE TUTTO SU MCP
-def execute_tool(tool_name: str, query: str = None, selected_doc=None, messages=None):
+def execute_tool(tool_name: str, query: str = None, selected_doc=None, messages=None, context=""):
 
     print("tool_name", tool_name)
 
     if tool_name == "search_documents":
-        context, structured_sources = conversational_search_tool(query, messages, selected_doc)
+        context_result, structured_sources = conversational_search_tool(query, messages, selected_doc, temp_context=context)
         return {
-            "context": context,
+            "context": context_result,
             "sources": structured_sources
         }
 
@@ -91,7 +91,7 @@ def execute_tool(tool_name: str, query: str = None, selected_doc=None, messages=
     return {"error": "Tool non trovato"}
 
 
-def tool_planner(query, messages=None):
+def tool_planner(query, messages=None, context=""):
     tools_description = "\n".join(
         [f"{t['name']}: {t['description']}" for t in TOOLS]
     )
@@ -119,10 +119,22 @@ CONTESTO CONVERSAZIONALE PRECEDENTE:
     else:
         context_section = "Nessun contesto conversazionale precedente."
 
+    file_section = ""
+    if context:
+        file_section = f"\nFILE TEMPORANEO CARICATO:\n{context[:3000]}\n"  # Limita la lunghezza del prompt
+    else:
+        file_section = "\nNessun file temporaneo caricato.\n"
+
     prompt = f"""
-Sei un AI che decide quale tool usare. Analizza la DOMANDA ATTUALE considerando il contesto.
+Sei un AI che decide quale tool usare. Analizza la DOMANDA ATTUALE considerando il contesto e il contenuto del file temporaneo, se presente.
 
 {context_section}
+
+{file_section}
+
+Se è presente un file temporaneo caricato e la domanda riguarda quel file, usa preferibilmente lo strumento "search_documents" per interrogare il contenuto del file temporaneo.
+Non rispondere direttamente con DLA quando la richiesta chiede di analizzare o spiegare il file caricato.
+Parole chiave da considerare: "file caricato", "questo file", "file temporaneo", "file allegato", "nel file", "contenuto del file", "cosa fa il file", "descrivi il file", "cosa contiene il file", "analizza il file".
 
 Tools disponibili:
 {tools_description}
@@ -163,8 +175,10 @@ STRATEGIA DI DECISIONE:
 
    g) NESSUN TOOL (→ "none"):
       - Conversazioni, saluti, domande generiche
+      - Domande che richiedono di descrivere, spiegare, riassumere o analizzare il file temporaneo caricato
 
 REGOLE IMPORTANTI:
+- Se è presente un file temporaneo e la domanda parla esplicitamente del file caricato, preferisci "none" e rispondi direttamente usando il contenuto del file
 - Se la domanda è AMBIGUA o correlata al contesto → preferisci "search_documents"
 - Se la domanda è su argomento diverso → decidi indipendentemente dal contesto
 - Rispondi SOLO in JSON valido, senza spiegazioni extra

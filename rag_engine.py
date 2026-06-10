@@ -223,7 +223,17 @@ def build_chat_history(messages, max_turns=6):
 
     return "\n".join(history)
 
-def conversational_search_tool(query, messages, selected_doc=None):
+def query_mentions_temp_file(query: str) -> bool:
+    keywords = [
+        "file caricato", "questo file", "file temporaneo", "file allegato",
+        "nel file", "contenuto del file", "cosa fa il file", "descrivi il file",
+        "cosa contiene il file", "analizza il file", "documento"
+    ]
+    lower_query = query.lower()
+    return any(keyword in lower_query for keyword in keywords)
+
+
+def conversational_search_tool(query, messages, selected_doc=None, temp_context=None):
     """
     Pipeline completa conversational RAG
     """
@@ -237,10 +247,30 @@ def conversational_search_tool(query, messages, selected_doc=None):
     print("🔵 Original query:", query)
     print("🟢 Rewritten query:", standalone_query)
 
-    # 3. retrieval normale
+    # 3. temporary file search
+    if temp_context and query_mentions_temp_file(query):
+        if isinstance(temp_context, dict):
+            temp_name = temp_context.get("name", "file_temporaneo")
+            temp_text = temp_context.get("content", "")
+        else:
+            temp_name = "file_temporaneo"
+            temp_text = str(temp_context)
+
+        if temp_text:
+            context = f"[1] DOCUMENTO: {temp_name}\n{temp_text}"
+            sources = [{
+                "index": 1,
+                "file": temp_name,
+                "page": "n/a",
+                "text": temp_text[:300].replace("\n", " ")
+            }]
+            return context, sources
+
+    # 4. retrieval normale
     context, sources = search_context(standalone_query, selected_doc)
 
     return context, sources
+
 
 def summarize_document_tool(file_name: str):
     document_text = get_full_document(file_name, collection)
