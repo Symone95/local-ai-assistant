@@ -7,6 +7,43 @@ from rag_engine import get_files_with_upload_date_tool, get_files_in_db_tool, co
     summarize_document_tool, extract_filename_from_query, generate_report_content
 from utils.general import generate_pdf_report
 from dto.managers.radio_manager import radio_manager
+from dto.managers.meteo_manager import meteo_manager
+
+
+def extract_city_from_query(query: str) -> str:
+    """Estrai una città dalla richiesta dell'utente per meteo_tool."""
+    if not query:
+        return ""
+
+    query = query.lower().strip()
+    query = re.sub(r"[\?\.!,:]", "", query)
+
+    # Cerca pattern come "a Milano", "a Roma", "in Firenze", "per Napoli", "di Torino"
+    match = re.search(
+        r"\b(?:a|in|per|di)\s+([a-zàèéìíòóùúçœæ]+(?:[\s\-][a-zàèéìíòóùúçœæ]+)*)",
+        query,
+        re.IGNORECASE,
+    )
+    if match:
+        return match.group(1).strip()
+
+    # Fallback: prendi l'ultima parte utile della frase se ci sono parole chiave del meteo.
+    weather_keywords = r"\b(meteo|tempo|previsioni|pioggia|sole|neve|vento|temperatura|umidità)\b"
+    if re.search(weather_keywords, query):
+        tokens = query.split()
+        stopwords = {
+            "oggi", "domani", "stasera", "mattina", "sera", "notte",
+            "nel", "nella", "nelle", "sul", "sulla", "sulle",
+            "del", "della", "dello", "dei", "degli", "delle",
+            "per", "a", "in", "di", "che", "come",
+            "è", "c", "e", "ma", "o", "se"
+        }
+        while tokens and tokens[-1] in stopwords:
+            tokens.pop()
+        if tokens:
+            return tokens[-1].strip()
+
+    return ""
 
 TOOLS = [
     ## Strumenti per gestione documenti e RAG
@@ -60,6 +97,11 @@ TOOLS = [
     {
         "name": "radio_tool",
         "description": "Gestisce le stazioni radio e riproduce stazioni conosciute",
+        "input": "query"
+    },
+    {
+        "name": "meteo_tool",
+        "description": "Fornisce informazioni sul meteo",
         "input": "query"
     }
 ]
@@ -199,6 +241,21 @@ def execute_tool(tool_name: str, query: str = None, selected_doc=None, messages=
             "stations": [s["nome"] for s in stations]
         }
 
+    if tool_name == "meteo_tool":
+        city = extract_city_from_query(query or "")
+        if not city:
+            return {
+                "status": "error",
+                "message": "Non ho riconosciuto una città nell'input. Per favore specifica una città per il meteo."
+            }
+
+        meteo_result = meteo_manager.current_weather(q=city)
+        return {
+            "status": "success",
+            "city": city,
+            "data": meteo_result
+        }
+
 
     return {"error": "Tool non trovato"}
 
@@ -207,10 +264,14 @@ def tool_planner(query, messages=None, context=""):
     # Heuristic: detect radio-related requests before delegation to the LLM planner.
     if query:
         query_lower = query.lower()
+
+        if re.search(r"\b(meteo|tempo|previsioni|pioggia|sole|neve|vento|temperatura|umidità)\b", query_lower):
+            return json.dumps({"tool": "meteo_tool", "query": query})
+
         if re.search(r"\b(radio|stazione|stazioni|ascolta|ascoltiamo|ascoltare|riproduci|metti la radio|radio105|rtl 102\.5|rtl|deejay)\b", query_lower):
             return json.dumps({"tool": "radio_tool", "query": query})
 
-        stop_pattern = re.compile(r"\b(stop|ferma|spegni|spegnila|arresta|chiudi|disattiva|metti giù|muto)\b", re.IGNORECASE)
+        stop_pattern = re.compile(r"\b(stop|ferma|spegni|spegni la radio|spegni radio|spegnila|arresta|chiudi|disattiva|metti giù|muto)\b", re.IGNORECASE)
         prior_text = "".join(
             [msg.get("content", "").lower() if isinstance(msg, dict) else getattr(msg, "content", "").lower() for msg in (messages or [])]
         )
@@ -306,6 +367,10 @@ STRATEGIA DI DECISIONE:
    g) RADIO (→ radio_tool):
       - Keyword: "radio", "stazione", "ascolta", "ascoltare", "metti la radio", "riproduci radio", "Radio105", "RTL 102.5"
       - Quando: l'utente vuole ascoltare una radio o gestire le stazioni radio
+    
+   h) METEO (→ meteo_tool):
+    - Keyword: "meteo", "tempo", "previsioni", "pioggia", "sole", "neve"
+    - Quando: l'utente vuole conoscere le informazioni meteorologiche
 
    h) NESSUN TOOL (→ "none"):
       - Conversazioni, saluti, domande generiche
