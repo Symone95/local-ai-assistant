@@ -79,6 +79,7 @@ PyPika==0.51.1
 pyproject_hooks==1.2.0
 python-dateutil==2.9.0.post0
 python-dotenv==1.2.2
+python-vlc==3.0.16120
 PyYAML==6.0.3
 referencing==0.37.0
 regex==2026.4.4
@@ -118,6 +119,7 @@ watchdog==6.0.0
 watchfiles==1.1.1
 websocket-client==1.9.0
 websockets==16.0
+wikipedia==1.4.0
 xxhash==3.6.0
 zipp==3.23.1
 zstandard==0.25.0

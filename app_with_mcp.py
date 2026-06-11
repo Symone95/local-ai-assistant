@@ -10,6 +10,7 @@ from langgraph.graph import StateGraph, END
 from langchain_core.messages import HumanMessage
 
 from streamlit_mic_recorder import mic_recorder
+from utils.radio_manager import radio_manager
 from utils.speech_to_text import transcribe_audio
 from utils.text_to_speech import generate_tts
 
@@ -158,43 +159,64 @@ if uploaded_files:
 
         st.sidebar.success("Documenti indicizzati!")
 
-# --- Sidebar Temporary File Reader ---
-st.sidebar.header("📂 Carica file temporaneo")
+# --- Temporary file upload menu on the left ---
+st.markdown("---")
+menu_col, main_col = st.columns([1, 3])
 
-temp_file = st.sidebar.file_uploader(
-    "Carica PDF, TXT, CSV o Excel per lettura temporanea",
-    type=["pdf", "txt", "md", "csv", "xls", "xlsx"],
-    accept_multiple_files=False,
-    key="temp_upload"
-)
-
-if "temp_file" not in st.session_state:
-    st.session_state.temp_file = None
-
-if temp_file:
-    temp_text = load_file_text(temp_file)
-    st.session_state.temp_file = {
-        "name": temp_file.name,
-        "content": temp_text,
-        "type": temp_file.type,
-    }
-    st.sidebar.success(f"File temporaneo caricato: {temp_file.name}")
-    file_content_limit = 300
-    if temp_text:
-        st.sidebar.write(temp_text[:file_content_limit] + ("..." if len(temp_text) > file_content_limit else ""))
-    else:
-        st.sidebar.warning("Impossibile leggere il file temporaneo.")
-
-if st.session_state.get("temp_file"):
-    # use_temp_context = st.sidebar.checkbox(
-    #     "Usa il file temporaneo in questa richiesta",
-    #     value=True,
-    #     key="use_temp_context",
-    #     help="Se attivo, il contenuto del file temporaneo sarà passato come contesto al modello."
-    # )
-    if st.sidebar.button("🗑️ Rimuovi file temporaneo"):
+with menu_col:
+    st.subheader("📂 Menu temporaneo")
+    st.write("Carica qui un file per lettura veloce e uso immediato.")
+    if "temp_file" not in st.session_state:
         st.session_state.temp_file = None
-        st.experimental_rerun()
+
+    temp_file = st.file_uploader(
+        "Carica PDF, TXT, CSV o Excel per lettura temporanea",
+        type=["pdf", "txt", "md", "csv", "xls", "xlsx"],
+        accept_multiple_files=False,
+        key="temp_upload_left"
+    )
+
+    if temp_file:
+        temp_text = load_file_text(temp_file)
+        st.session_state.temp_file = {
+            "name": temp_file.name,
+            "content": temp_text,
+            "type": temp_file.type,
+        }
+        st.success(f"File temporaneo caricato: {temp_file.name}")
+        file_content_limit = 300
+        if temp_text:
+            st.write(temp_text[:file_content_limit] + ("..." if len(temp_text) > file_content_limit else ""))
+        else:
+            st.warning("Impossibile leggere il file temporaneo.")
+
+    if st.session_state.get("temp_file"):
+        if st.button("🗑️ Rimuovi file temporaneo", key="remove_temp_left"):
+            st.session_state.temp_file = None
+            st.experimental_rerun()
+
+with main_col:
+    st.subheader("📝 Area di lavoro")
+    st.write("Usa il menu a sinistra per caricare un file temporaneo, poi continua la conversazione qui sotto.")
+
+# --- Controllo radio ---
+st.sidebar.header("🎧 Controllo Radio")
+radio_on = radio_manager.is_playing()
+if radio_on:
+    st.sidebar.success("Radio in riproduzione")
+    if radio_manager.current_audio:
+        st.sidebar.write(f"Stazione attuale: **{radio_manager.current_audio}**")
+    if st.sidebar.button("🔴 Ferma radio"):
+        try:
+            stopped = radio_manager.stop_radio()
+            if stopped:
+                st.sidebar.success("Radio spenta.")
+            else:
+                st.sidebar.info("Non c'era alcuna radio in riproduzione.")
+        except RuntimeError as exc:
+            st.sidebar.error(str(exc))
+else:
+    st.sidebar.info("Radio ferma")
 
 # --- Chat history ---
 if "messages" not in st.session_state:
@@ -206,7 +228,7 @@ for msg in st.session_state.messages:
 
 
 # Input utente
-query = st.chat_input("Fai una domanda sui documenti")
+query = st.chat_input("Fai una domanda sui documenti o usa il file uploader temporaneo qui sopra")
 # Input utente vocale
 audio = mic_recorder(
     start_prompt="🎤 Inizia a parlare",
@@ -293,6 +315,9 @@ if query:
                 "final_answer": ""
             }, version="v2"):
 
+                #print("event: ", event["event"])
+                #print(dir(event))
+                #print(event)
                 # ── 🤖 INTERCETTAZIONE EVENTI PERSONALIZZATI DA MCP ──
                 if event["event"] == "on_custom_event":
                     # Se il server MCP ha inviato un log di testo

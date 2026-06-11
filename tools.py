@@ -1,9 +1,15 @@
+import json
+import json
 import ollama
+import os
+import re
 from rag_engine import get_files_with_upload_date_tool, get_files_in_db_tool, conversational_search_tool, \
     summarize_document_tool, extract_filename_from_query, generate_report_content
 from utils.general import generate_pdf_report
+from utils.radio_manager import radio_manager
 
 TOOLS = [
+    ## Strumenti per gestione documenti e RAG
     {
         "name": "search_documents",
         "description": "Cerca informazioni nei documenti caricati",
@@ -29,6 +35,7 @@ TOOLS = [
         "description": "Genera un report PDF professionale su qualsiasi argomento",
         "input": "title, content"
     },
+    ## Strumenti MCP per Ansible e gestione infrastruttura
     {
         "name": "mcp_list_playbooks_tool",
         "description": "Lista playbook disponibili",
@@ -48,6 +55,12 @@ TOOLS = [
         "name": "mcp_save_playbook_tool",
         "description": "Salva playbook ansible",
         "input": "name, content"
+    },
+    ## Strumento per gestione radio
+    {
+        "name": "radio_tool",
+        "description": "Gestisce le stazioni radio e riproduce stazioni conosciute",
+        "input": "query"
     }
 ]
 
@@ -87,11 +100,112 @@ def execute_tool(tool_name: str, query: str = None, selected_doc=None, messages=
             "report_text": report_markdown,
             "pdf": pdf_result
         }
+    
+    if tool_name == "radio_tool":
+        query_text = query or ""
+        query_lower = query_text.lower()
+
+        # Prova a trovare una stazione dalla domanda dell'utente
+        stations = radio_manager.get_station_list()
+        station = None
+
+        stop_pattern = re.compile(r"\b(stop|ferma|spegni|spegnila|spengila|arresta|chiudi|disattiva|metti giù|muto)\b", re.IGNORECASE)
+        if stop_pattern.search(query_lower):
+            try:
+                stopped = radio_manager.stop_radio()
+                if stopped:
+                    return {
+                        "status": "stopped",
+                        "message": "La radio è stata spenta.",
+                        "station": radio_manager.current_audio
+                    }
+                return {
+                    "status": "stopped",
+                    "message": "Non c'era alcuna radio in riproduzione.",
+                    "station": None
+                }
+            except RuntimeError as exc:
+                return {
+                    "status": "error",
+                    "message": str(exc),
+                    "stations": [s["nome"] for s in stations]
+                }
+
+        # Controllo URL diretto nella query
+        url_match = re.search(r"https?://\S+", query_text)
+        if url_match:
+            station_url = url_match.group(0).strip()
+            try:
+                radio_manager.play_radio(station_url)
+                return {
+                    "status": "playing",
+                    "station": station_url,
+                    "message": f"Riproduco l'URL radio: {station_url}",
+                    "stations": [s["nome"] for s in stations]
+                }
+            except RuntimeError as exc:
+                return {
+                    "status": "error",
+                    "message": str(exc),
+                    "stations": [s["nome"] for s in stations]
+                }
+
+        # Match del nome stazione
+        for radio in sorted(stations, key=lambda x: -len(x["nome"])):
+            nome_lower = radio["nome"].lower()
+            if nome_lower in query_lower:
+                station = radio
+                break
+            if nome_lower.replace("radio", "").strip() in query_lower:
+                station = radio
+                break
+
+        if station:
+            try:
+                radio_manager.play_radio(station["url"])
+                return {
+                    "status": "playing",
+                    "station": station["nome"],
+                    "url": station["url"],
+                    "message": f"Sto riproducendo {station['nome']}.",
+                    "current_audio": station["nome"]
+                }
+            except RuntimeError as exc:
+                return {
+                    "status": "error",
+                    "message": str(exc),
+                    "stations": [s["nome"] for s in stations]
+                }
+
+        return {
+            "status": "list",
+            "message": "Non ho identificato una stazione precisa. Ecco le radio disponibili:",
+            "stations": [s["nome"] for s in stations]
+        }
+
 
     return {"error": "Tool non trovato"}
 
 
 def tool_planner(query, messages=None, context=""):
+    # Heuristic: detect radio-related requests before delegation to the LLM planner.
+    if query:
+        query_lower = query.lower()
+        if re.search(r"\b(radio|stazione|stazioni|ascolta|ascoltiamo|ascoltare|riproduci|metti la radio|radio105|rtl 102\.5|rtl|deejay)\b", query_lower):
+            return json.dumps({"tool": "radio_tool", "query": query})
+
+        stop_pattern = re.compile(r"\b(stop|ferma|spegni|spegnila|arresta|chiudi|disattiva|metti giù|muto)\b", re.IGNORECASE)
+        prior_text = "".join(
+            [msg.get("content", "").lower() if isinstance(msg, dict) else getattr(msg, "content", "").lower() for msg in (messages or [])]
+        )
+        if stop_pattern.search(query_lower) and (
+            "radio" in query_lower
+            or radio_manager.is_playing()
+            or "radio" in prior_text
+            or any(station["nome"].lower() in prior_text for station in radio_manager.get_station_list())
+        ):
+            return json.dumps({"tool": "radio_tool", "query": query})
+
     tools_description = "\n".join(
         [f"{t['name']}: {t['description']}" for t in TOOLS]
     )
@@ -173,7 +287,11 @@ STRATEGIA DI DECISIONE:
       - Keyword: "genera report", "report pdf", "crea report", "genera documento", "report su"
       - Quando: chiede un report PDF
 
-   g) NESSUN TOOL (→ "none"):
+   g) RADIO (→ radio_tool):
+      - Keyword: "radio", "stazione", "ascolta", "ascoltare", "metti la radio", "riproduci radio", "Radio105", "RTL 102.5"
+      - Quando: l'utente vuole ascoltare una radio o gestire le stazioni radio
+
+   h) NESSUN TOOL (→ "none"):
       - Conversazioni, saluti, domande generiche
       - Domande che richiedono di descrivere, spiegare, riassumere o analizzare il file temporaneo caricato
 

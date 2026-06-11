@@ -18,6 +18,8 @@ def router_node(state: AgentState):
         plan = json.loads(plan)
     except:
         plan = {"tool": "none"}
+
+    print("TOOL PLANNER HA DECISO DI USARE IL TOOL: %s" % plan["tool"])
     state["tool_plan"] = {"tool": plan["tool"]}
     return state
 

@@ -1,0 +1,51 @@
+[
+	{
+		"nome": "Radio105",
+		"url": "https://icy.unitedradio.it/Radio105.mp3"
+	},
+	{
+		"nome": "RTL 102.5",
+		"url": "https://streamingv2.shoutcast.com/rtl-1025"
+	},
+	{
+		"nome": "R101",
+		"url": "https://icecast.unitedradio.it/r101"
+	},
+	{
+		"nome": "Radio Deejay",
+		"url": "https://radiodeejay-lh.akamaihd.net/i/RadioDeejay_Live_1@189857/master.m3u8"
+	},
+	{
+		"nome": "Kiss Kiss",
+		"url": "https://ice08.fluidstream.net/KissKiss.mp3"
+	},
+	{
+		"nome": "RDS",
+		"url": "https://icstream.rds.radio/rds"
+	}
+	,
+	{
+		"nome": "Virgin Radio",
+		"url": "https://icecast.unitedradio.it/Virgin.mp3"
+	},
+	{
+		"nome": "Radio Zeta",
+		"url": "https://streamingv2.shoutcast.com/radio-zeta"
+	},
+	{
+		"nome": "Radio Subasio",
+		"url": "https://icy.unitedradio.it/Subasio.mp3"
+	},
+	{
+		"nome": "Radio Studio 54",
+		"url": "http://artserver.ns0.it:8540/;stream.mp3"
+	},
+	{
+		"nome": "Radio Capital",
+		"url": "https://radiocapital-lh.akamaihd.net/i/RadioCapital_Live_1@196312/master.m3u8"
+	},
+	{
+		"nome": "Radio Studio +",
+		"url": "https://ice.studiopiu.net/rete.aac"
+	}
+]
