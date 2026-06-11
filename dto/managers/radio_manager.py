@@ -108,6 +108,7 @@ class RadioManager:
 		"""
 		random_radio = self.stazioni_radio_salvate[random.randint(0, len(self.stazioni_radio_salvate) - 1)]
 		self.play_radio(random_radio["url"])
+		self.current_audio = random_radio["nome"]
 
 	def stop_radio(self):
 		if self.player is None:

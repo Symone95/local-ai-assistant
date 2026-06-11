@@ -6,7 +6,7 @@ import re
 from rag_engine import get_files_with_upload_date_tool, get_files_in_db_tool, conversational_search_tool, \
     summarize_document_tool, extract_filename_from_query, generate_report_content
 from utils.general import generate_pdf_report
-from utils.radio_manager import radio_manager
+from dto.managers.radio_manager import radio_manager
 
 TOOLS = [
     ## Strumenti per gestione documenti e RAG
@@ -169,6 +169,22 @@ def execute_tool(tool_name: str, query: str = None, selected_doc=None, messages=
                     "url": station["url"],
                     "message": f"Sto riproducendo {station['nome']}.",
                     "current_audio": station["nome"]
+                }
+            except RuntimeError as exc:
+                return {
+                    "status": "error",
+                    "message": str(exc),
+                    "stations": [s["nome"] for s in stations]
+                }
+
+        random_play_pattern = re.compile(r"\b(accendi|accendila|metti|mettila|apri|attiva|avvia|riproduci|ascolta)\b.*\bradio\b|\bradio\b.*\b(accendi|accendila|metti|mettila|apri|attiva|avvia|riproduci|ascolta)\b", re.IGNORECASE)
+        if random_play_pattern.search(query_text) and not station:
+            try:
+                radio_manager.random_radio()
+                return {
+                    "status": "playing",
+                    "message": "Accendo una radio casuale.",
+                    "current_audio": radio_manager.current_audio
                 }
             except RuntimeError as exc:
                 return {
