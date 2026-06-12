@@ -7,6 +7,7 @@ class AgentState(TypedDict):
     messages: Annotated[list, add_messages]
     sources: Dict
     context: str
+    current_file: str  # <--- Traccia l'ultimo file aperto/nominato
     selected_doc: List
     tool_plan: Dict
     tool_result: Dict

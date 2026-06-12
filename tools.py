@@ -1,13 +1,12 @@
 import json
-import json
 import ollama
-import os
 import re
 from rag_engine import get_files_with_upload_date_tool, get_files_in_db_tool, conversational_search_tool, \
     summarize_document_tool, extract_filename_from_query, generate_report_content
-from utils.general import generate_pdf_report, extract_city_from_query
+from utils.general import generate_pdf_report, extract_city_from_query, extract_path_with_llm
 from dto.managers.radio_manager import radio_manager
 from dto.managers.meteo_manager import meteo_manager
+from dto.managers.terminal_manager import terminal_manager
 
 
 TOOLS = [
@@ -69,11 +68,17 @@ TOOLS = [
         "name": "meteo_tool",
         "description": "Fornisce informazioni sul meteo",
         "input": "query"
+    },
+    ## Strumento per esecuzione comandi terminale e gestione filesystem
+    {
+        "name": "terminal_tool",
+        "description": "Legge, analizza, rifattorizza o mostra il contenuto di file e cartelle del progetto. Usalo quando l'utente menziona un file specifico (.py, .js, .ts, ecc.) o vuole analizzare/leggere/refactoring del codice.",
+        "input": "query"
     }
 ]
 
 # TODO: SPOSTARE TUTTO SU MCP
-def execute_tool(tool_name: str, query: str = None, selected_doc=None, messages=None, context=""):
+def execute_tool(tool_name: str, query: str = None, selected_doc=None, messages=None, context="", current_file=""):
 
     print("tool_name: ", tool_name)
 
@@ -221,18 +226,34 @@ def execute_tool(tool_name: str, query: str = None, selected_doc=None, messages=
             "city": city,
             "data": meteo_result
         }
+    
+    if tool_name == "terminal_tool":
+        path = extract_path_with_llm(query or "", current_file=current_file)
+        try:
+            result = terminal_manager.list_and_read_files(path)
+            return {"status": "success", "path": path, "content": result, "current_file": path}
+        except Exception as exc:
+            return {"status": "error", "message": str(exc)}
 
 
     return {"error": "Tool non trovato"}
 
 
 def tool_planner(query, messages=None, context=""):
-    # Heuristic: detect radio-related requests before delegation to the LLM planner.
+    
     if query:
         query_lower = query.lower()
 
         if re.search(r"\b(meteo|tempo|previsioni|pioggia|sole|neve|vento|temperatura|umidità)\b", query_lower):
             return json.dumps({"tool": "meteo_tool", "query": query})
+
+        # Terminal/Filesystem requests: elenca o leggi file/cartelle
+        if re.search(r"\b(lista|elenca|mostra|apri|leggi|leggere|leggerlo|visualizza)\b.*\b(file|cartella|cartelle|folder|dir|directory)\b", query_lower):
+            return json.dumps({"tool": "terminal_tool", "query": query})
+
+        # File con estensione esplicita: analisi, refactoring, lettura codice
+        if re.search(r"\b\w[\w\-]*\.(py|js|ts|jsx|tsx|java|go|cpp|c|cs|rb|php|sh|yaml|yml|json|md)\b", query_lower):
+            return json.dumps({"tool": "terminal_tool", "query": query})
 
         if re.search(r"\b(radio|stazione|stazioni|ascolta|ascoltiamo|ascoltare|riproduci|metti la radio|radio105|rtl 102\.5|rtl|deejay)\b", query_lower):
             return json.dumps({"tool": "radio_tool", "query": query})
@@ -338,7 +359,11 @@ STRATEGIA DI DECISIONE:
     - Keyword: "meteo", "tempo", "previsioni", "pioggia", "sole", "neve"
     - Quando: l'utente vuole conoscere le informazioni meteorologiche
 
-   h) NESSUN TOOL (→ "none"):
+   i) FILESYSTEM / CODICE (→ terminal_tool):
+      - Keyword: nomi di file con estensione (.py, .js, .ts, .yaml, ecc.), "mostrami il codice", "leggi il file", "analizza il file", "rifattorizza", "refactor", "cosa fa", "spiega questo file", "apri", "visualizza"
+      - Quando: l'utente menziona un file specifico del progetto o vuole leggerne/analizzarne il codice
+
+   j) NESSUN TOOL (→ "none"):
       - Conversazioni, saluti, domande generiche
       - Domande che richiedono di descrivere, spiegare, riassumere o analizzare il file temporaneo caricato
 

@@ -6,9 +6,22 @@ from datetime import datetime
 from langchain_core.messages import HumanMessage, AIMessage
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
+import subprocess
 
 import pandas as pd
 from pdf_loader import load_pdf
+
+import json
+from langchain_core.prompts import PromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+from langchain_ollama import ChatOllama
+
+llm = ChatOllama(model="qwen2.5-coder:3b",  # llama3"
+                 num_ctx=4096,              # con questo dico di non andare oltre i 4k di token
+                 format="json",
+                 temperature=0.0,
+                 num_predict=-1
+                )
 
 def convert_to_langchain_messages(streamlit_messages):
     lc_messages = []
@@ -109,7 +122,6 @@ def load_file_text(uploaded_file, max_chars: int = 20000):
         text = text[:max_chars] + "\n\n...[troncato]"
     return text
 
-
 def generate_pdf_report(title: str, content: str):
     """
     Genera un PDF nella cartella /reports e ritorna il path del file.
@@ -156,9 +168,6 @@ def generate_pdf_report(title: str, content: str):
         "message": f"PDF creato: {filename}"
     }
 
-
-import subprocess
-
 def run_ansible_playbook(playbook_path: str, inventory_path: str = "inventory.ini"):
     cmd = [
         "ansible-playbook --check",
@@ -184,7 +193,6 @@ def save_ansible_playbook(name: str, content: str):
 
     return {"saved_path": path}
 
-
 def get_ansible_playbooks():
     import os
 
@@ -192,7 +200,6 @@ def get_ansible_playbooks():
         return []
 
     return os.listdir("ansible_memory")
-
 
 def extract_city_from_query(query: str) -> str:
     """Estrai una città dalla richiesta dell'utente per meteo_tool."""
@@ -228,3 +235,130 @@ def extract_city_from_query(query: str) -> str:
             return tokens[-1].strip()
 
     return ""
+
+def extract_path_with_llm(query: str, current_file: str = "") -> str:
+    """Usa Llama per capire il file richiesto, sfruttando la memoria del grafo."""
+    
+    prompt_template = """
+    Sei un assistente software esperto. Il tuo compito è capire quale FILE o CARTELLA l'utente vuole analizzare, leggere o rifattorizzare.
+
+    Contesto attuale:
+    L'ultimo file su cui l'utente ha lavorato o che ha aperto è: "{current_file}"
+
+    Regole rigide:
+    1. Rispondi SOLO con un oggetto JSON valido: {{"path": "nome_del_file_o_cartella"}}
+    2. Se l'utente si riferisce a "quel file", "questo file", "rifattorizzalo" o formule simili, e il Contesto attuale NON è vuoto, restituisci il nome del file presente nel contesto attuale.
+    3. Se l'utente non specifica alcun file e non si riferisce a quello precedente, restituisci "".
+    4. Non aggiungere altro testo.
+
+    Richiesta utente: "{query}"
+
+    Risposta JSON:"""
+
+    prompt = PromptTemplate.from_template(prompt_template)
+    chain = prompt | llm | StrOutputParser()
+
+    try:
+        raw_response = chain.invoke({
+            "query": query, 
+            "current_file": current_file
+        }).strip()
+        
+        # Pulizia blocchi markdown ```json
+        if "```" in raw_response:
+            raw_response = raw_response.split("```")[1]
+            if raw_response.startswith("json"):
+                raw_response = raw_response[4:]
+                
+        data = json.loads(raw_response.strip())
+        candidate_path = data.get("path", "").strip()
+        
+        if candidate_path.startswith("/") or ".." in candidate_path:
+            return ""
+            
+        return candidate_path
+    except Exception as e:
+        print(f"Errore nell'estrazione LLM: {e}")
+        return ""
+
+
+def extract_code_block(text):
+    """
+    Parsa una risposta markdown ed estrae le parti attorno al code block.
+    Ritorna (pre, lang, code, post, chiuso):
+        - pre:    testo prima del ```
+        - lang:   linguaggio dichiarato (es. "python")
+        - code:   contenuto del blocco senza backtick
+        - post:   testo dopo il blocco chiuso
+        - chiuso: True se il blocco ``` è già chiuso
+    """
+    idx_open = text.find("```")
+    if idx_open == -1:
+        return text, None, None, "", False
+
+    pre = text[:idx_open]
+    rest = text[idx_open + 3:]
+
+    nl = rest.find("\n")
+    if nl == -1:
+        return pre, rest.strip() or "plaintext", "", "", False
+
+    lang = rest[:nl].strip() or "plaintext"
+    rest = rest[nl + 1:]
+
+    idx_close = rest.find("```")
+    if idx_close == -1:
+        return pre, lang, rest, "", False
+
+    code = rest[:idx_close]
+    post = rest[idx_close + 3:]
+    if post.startswith("\n"):
+        post = post[1:]
+    return pre, lang, code, post, True
+
+def clean_code_content(code: str) -> str:
+    """Rimuove dal codice estratto le righe di metadati generate dall'LLM."""
+    import re
+    cleaned = []
+    for line in code.split("\n"):
+        s = line.strip()
+        if re.match(r"^-{3,}", s):
+            continue
+        if re.match(r"^📚\s*Fonti:", s):
+            continue
+        if re.match(r"^Contenuto di\s+\S+", s):
+            continue
+        if s.startswith("|"):                          # riga tabella markdown
+            continue
+        if re.match(r"^[-|: ]+$", s) and len(s) > 2: # separatore tabella |---|
+            continue
+        cleaned.append(line)
+    while cleaned and not cleaned[0].strip():
+        cleaned.pop(0)
+    while cleaned and not cleaned[-1].strip():
+        cleaned.pop()
+    return "\n".join(cleaned)
+
+def clean_post_content(text: str) -> str:
+    """
+    Filtra il testo dopo il code block: mantiene solo righe utili
+    (fonti, testo normale) e scarta tabelle markdown e separatori.
+    """
+    import re
+    kept = []
+    for line in text.split("\n"):
+        s = line.strip()
+        if s.startswith("|"):           # riga di tabella markdown
+            continue
+        if re.match(r"^[-|: ]+$", s) and len(s) > 2:  # separatore tabella |---|
+            continue
+        if re.match(r"^-{3,}", s):      # separatori ---
+            continue
+        if re.match(r"^Contenuto di\s+\S+", s):
+            continue
+        kept.append(line)
+    while kept and not kept[0].strip():
+        kept.pop(0)
+    while kept and not kept[-1].strip():
+        kept.pop()
+    return "\n".join(kept)

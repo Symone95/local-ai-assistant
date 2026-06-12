@@ -4,8 +4,9 @@ from dto.agent_state import AgentState
 import json
 
 from langchain_ollama import ChatOllama
-llm = ChatOllama(model="qwen2.5-coder:3b",  # llama3")
-                 num_ctx=4096)              # con questo dico di non andare oltre i 4k di token
+llm = ChatOllama(model="qwen2.5-coder:3b",  # llama3"
+                 num_ctx=4096,              # con questo dico di non andare oltre i 4k di token
+                )
 
 
 def router_node(state: AgentState):
@@ -34,17 +35,17 @@ def tool_node(state: AgentState):
         query,
         selected_doc=state.get("selected_doc"),
         messages=messages,
-        context=state.get("context", "")
+        context=state.get("context", ""),
+        current_file=state.get("current_file", "")
     )
+    
+    if result and "pdf" in result: # Se abbiamo generato un PDF NON serve far parlare l'LLM
+            return {
+                "final_answer": "Ho creato il report PDF! Scaricalo qui sotto 👇",
+                "pdf_path": result["pdf"]
+            }
 
-    # Se abbiamo generato un PDF NON serve far parlare l'LLM
-    if result and "pdf" in result:
-        return {
-            "final_answer": "Ho creato il report PDF! Scaricalo qui sotto 👇",
-            "pdf_path": result["pdf"]
-        }
-
-    return {"tool_result": result}
+    return {"tool_result": result, "current_file": result.get("current_file", "")}
 
 
 def direct_llm_answer(state: AgentState):
@@ -104,7 +105,7 @@ Sei un assistente AI che elabora informazioni da documenti e tool.
 COMPORTAMENTO OBBLIGATORIO:
 1. Rispondi direttamente e chiaramente alla domanda dell'utente
 2. Usa SOLO le informazioni fornite dal tool/contesto
-3. Se il risultato del tool è rilevante, fai riferimento ad esso esplicitamente
+3. Se il risultato del tool contiene il codice di un file, usalo come base per analisi, refactoring o spiegazioni — non dire che non hai accesso al file
 4. Se il contesto è vuoto o il tool non ha trovato nulla, comunica chiaramente
 
 CITAZIONI E FONTI:

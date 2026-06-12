@@ -2,7 +2,7 @@ import streamlit as st
 
 from mcp_client import mcp_tool_node
 from rag_engine import add_documents, reset_database, collection, get_file_hash
-from utils.general import get_db_stats, convert_to_langchain_messages, load_file_text
+from utils.general import clean_code_content, clean_post_content, get_db_stats, convert_to_langchain_messages, load_file_text, extract_code_block
 import os
 import asyncio
 from nodes import *
@@ -70,7 +70,7 @@ graph.add_conditional_edges(
 )
 
 graph.add_edge("tool", "llm")
-graph.add_edge("mcp_tool", "llm") #END)
+graph.add_edge("mcp_tool", "llm")
 graph.add_edge("llm", END)
 graph.add_edge("direct_llm_answer", END)
 
@@ -221,6 +221,9 @@ if radio_on:
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
+if "current_file" not in st.session_state:
+    st.session_state.current_file = ""
+
 # Mostra messaggi precedenti
 for msg in st.session_state.messages:
     st.chat_message(msg["role"]).write(msg["content"])
@@ -294,7 +297,11 @@ if query:
             # 1. Creiamo i segnaposto grafici DENTRO il messaggio dell'assistente
             mcp_log_placeholder = st.empty()
             mcp_progress_placeholder = st.empty()
-            container = st.empty()
+            header_container = st.empty()   # testo prima del code block
+            code_container = st.empty()     # codice con numerazione righe
+            footer_container = st.empty()   # testo dopo il code block (fonti, ecc.)
+            container = st.empty()          # fallback per risposte testuali normali
+            code_detected = False
 
             # Usiamo astream_events per intercettare i singoli token e i nostri eventi custom
             async for event in app.astream_events({
@@ -306,9 +313,7 @@ if query:
                 "final_answer": ""
             }, version="v2"):
 
-                #print("event: ", event["event"])
-                #print(dir(event))
-                #print(event)
+                # print("event: ", event["event"])
                 # ── 🤖 INTERCETTAZIONE EVENTI PERSONALIZZATI DA MCP ──
                 if event["event"] == "on_custom_event":
                     # Se il server MCP ha inviato un log di testo
@@ -337,26 +342,61 @@ if query:
                         append_reasoning(f"Nodo/chain completato: {name}")
                     else:
                         append_reasoning("Elaborazione catena completata")
+                    if event.get("name") == "tool":
+                        output = event["data"].get("output") if isinstance(event["data"], dict) else None
+                        if output and output.get("current_file"):
+                            st.session_state.current_file = output["current_file"]
                     if event.get("name") == "llm":
                         final_state = event["data"].get("output") if isinstance(event["data"], dict) else None
 
                 # ── ✍️ STREAMING DEL TESTO DELL'LLM ──
                 if event["event"] == "on_chat_model_stream":
                     # Appena l'LLM comincia a rispondere, puliamo i widget dell'MCP per non sporcare la chat
-                    mcp_log_placeholder.empty()
-                    mcp_progress_placeholder.empty()
-
+                    
                     content = event["data"]["chunk"].content
                     if content:
                         full_response += content
-                        container.markdown(full_response + "▌")  # Cursore effetto scrittura
+
+                        current_file = st.session_state.get("current_file", "")
+                        if any(keyword in full_response.lower() for keyword in ["file", "contenuto"]) or current_file:
+                            try:
+                                pre, lang, code, post, _ = extract_code_block(full_response)
+
+                                code_detected = True
+                                mcp_log_placeholder.caption(f"📄 Sto leggendo il file: {current_file}")
+                                header_container.markdown(pre.strip())
+                                code_container.code(clean_code_content(code or "") + "▌", language=lang, line_numbers=True)
+                                
+                                cleaned_post = clean_post_content(post)
+                                footer_container.markdown(cleaned_post.strip())
+                                
+                                container.empty()
+                            except Exception as e:
+                                print(f"Errore rendering codice: {e}")
+                                code_detected = False
+                                container.markdown(full_response + "▌")
+                        else:
+                            # Streaming normale per messaggi testuali
+                            container.markdown(full_response + "▌")
+
                         if len(reasoning_lines) == 1:
                             append_reasoning("Generazione della risposta in corso...")
 
-            # Pulizia finale di sicurezza per i widget e il testo
+            # Rendering finale: manteniamo il code block se rilevato, altrimenti markdown
+            if code_detected:
+                pre, lang, code, post, _ = extract_code_block(full_response)
+                header_container.markdown(pre.strip())
+                code_container.code(clean_code_content(code or ""), language=lang, line_numbers=True)
+                cleaned_post = clean_post_content(post)
+                footer_container.markdown(cleaned_post.strip())
+                container.empty()
+            else:
+                container.markdown(full_response)
+
+            # Pulizia finale dei widget temporanei
             mcp_log_placeholder.empty()
             mcp_progress_placeholder.empty()
-            container.markdown(full_response)
+
             append_reasoning("Elaborazione completata.")
             print("final_state: ", final_state)
 
