@@ -75,7 +75,7 @@ TOOLS = [
 # TODO: SPOSTARE TUTTO SU MCP
 def execute_tool(tool_name: str, query: str = None, selected_doc=None, messages=None, context=""):
 
-    print("tool_name", tool_name)
+    print("tool_name: ", tool_name)
 
     if tool_name == "search_documents":
         context_result, structured_sources = conversational_search_tool(query, messages, selected_doc, temp_context=context)

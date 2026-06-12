@@ -373,51 +373,6 @@ if query:
         st.audio(tts_file)
         return full_response
 
-    async def get_streaming_response_old():
-        full_response = ""
-        final_state = None
-        with st.spinner("Sto pensando..."), st.chat_message("assistant"):
-            container = st.empty()
-
-            # Usiamo astream_events per intercettare i singoli token
-            async for event in app.astream_events({
-                "query": query,
-                "messages": history + [current_query_msg],
-                "context": context_text,
-                "selected_doc": selected_doc,
-                "tool_result": {},
-                "final_answer": ""
-            }, version="v2"):
-                # print("event: ", event["event"])
-
-                # Cerchiamo l'evento di streaming del modello chat
-                if event["event"] == "on_chat_model_stream":
-                    content = event["data"]["chunk"].content
-                    if content:
-                        full_response += content
-                        container.markdown(full_response + "▌")  # Cursore effetto scrittura
-
-                # 🧠 STATO FINALE DEL GRAFO
-                if event["event"] == "on_chain_end" and event["name"] == "llm":
-                    final_state = event["data"]["output"]
-
-            container.markdown(full_response)  # Pulizia finale senza cursore
-            print("final_state: ", final_state)
-
-            # 🎁 SE ESISTE PDF → MOSTRA DOWNLOAD BUTTON
-            if final_state and "pdf_path" in final_state:
-                with open(final_state["pdf_path"], "rb") as file:
-                    st.download_button(
-                        label="📄 Scarica il report PDF",
-                        data=file,
-                        file_name="report.pdf",
-                        mime="application/pdf"
-                    )
-        tts_file = await generate_tts(full_response)
-        st.audio(tts_file)
-        return full_response
-
-
     # Esegue il loop asincrono
     final_answer = asyncio.run(get_streaming_response())
 
