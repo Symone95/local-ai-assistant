@@ -192,3 +192,39 @@ def get_ansible_playbooks():
         return []
 
     return os.listdir("ansible_memory")
+
+
+def extract_city_from_query(query: str) -> str:
+    """Estrai una città dalla richiesta dell'utente per meteo_tool."""
+    if not query:
+        return ""
+
+    query = query.lower().strip()
+    query = re.sub(r"[\?\.!,:]", "", query)
+
+    # Cerca pattern come "a Milano", "a Roma", "in Firenze", "per Napoli", "di Torino"
+    match = re.search(
+        r"\b(?:a|in|per|di)\s+([a-zàèéìíòóùúçœæ]+(?:[\s\-][a-zàèéìíòóùúçœæ]+)*)",
+        query,
+        re.IGNORECASE,
+    )
+    if match:
+        return match.group(1).strip()
+
+    # Fallback: prendi l'ultima parte utile della frase se ci sono parole chiave del meteo.
+    weather_keywords = r"\b(meteo|tempo|previsioni|pioggia|sole|neve|vento|temperatura|umidità)\b"
+    if re.search(weather_keywords, query):
+        tokens = query.split()
+        stopwords = {
+            "oggi", "domani", "stasera", "mattina", "sera", "notte",
+            "nel", "nella", "nelle", "sul", "sulla", "sulle",
+            "del", "della", "dello", "dei", "degli", "delle",
+            "per", "a", "in", "di", "che", "come",
+            "è", "c", "e", "ma", "o", "se"
+        }
+        while tokens and tokens[-1] in stopwords:
+            tokens.pop()
+        if tokens:
+            return tokens[-1].strip()
+
+    return ""
