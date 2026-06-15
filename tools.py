@@ -7,6 +7,7 @@ from utils.general import generate_pdf_report, extract_city_from_query, extract_
 from dto.managers.radio_manager import radio_manager
 from dto.managers.meteo_manager import meteo_manager
 from dto.managers.terminal_manager import terminal_manager
+from dto.managers.internet_search_manager import internet_search_tool
 
 
 TOOLS = [
@@ -73,6 +74,12 @@ TOOLS = [
     {
         "name": "terminal_tool",
         "description": "Legge, analizza, rifattorizza o mostra il contenuto di file e cartelle del progetto. Usalo quando l'utente menziona un file specifico (.py, .js, .ts, ecc.) o vuole analizzare/leggere/refactoring del codice.",
+        "input": "query"
+    },
+    ## Strumento per ricerche su internet
+    {
+        "name": "internet_search_tool",
+        "description": "Cerca informazioni in tempo reale su internet. Usalo per fatti che cambiano nel tempo: prezzi, notizie, risultati sportivi, versioni software, chi è attualmente in carica, eventi recenti. NON usarlo per conoscenza generale stabile.",
         "input": "query"
     }
 ]
@@ -235,6 +242,15 @@ def execute_tool(tool_name: str, query: str = None, selected_doc=None, messages=
         except Exception as exc:
             return {"status": "error", "message": str(exc)}
 
+    if tool_name == "internet_search_tool":
+        # Esegui la ricerca web
+        risultato_web = internet_search_tool(query)
+        
+        # Salvi il risultato nel contesto o nel tool_result così l'LLM lo legge nel nodo successivo
+        return {
+            "tool_result": {"content": risultato_web},
+            "context": context + f"\n\nRisultati di ricerca internet:\n{risultato_web}"
+        }
 
     return {"error": "Tool non trovato"}
 
@@ -257,6 +273,25 @@ def tool_planner(query, messages=None, context=""):
 
         if re.search(r"\b(radio|stazione|stazioni|ascolta|ascoltiamo|ascoltare|riproduci|metti la radio|radio105|rtl 102\.5|rtl|deejay)\b", query_lower):
             return json.dumps({"tool": "radio_tool", "query": query})
+
+        # Internet search: segnali temporali espliciti + argomenti del mondo reale
+        _temporal = re.search(
+            r"\b(questo weekend|questa settimana|questo mese|oggi|domani|dopodomani|stanotte|stasera|adesso|attualmente|di recente|ultimamente|ultime notizie|ora|in questo momento)\b",
+            query_lower
+        )
+        _realworld = re.search(
+            r"\b(eventi|evento|concerti|concerto|mostre|mostra|spettacoli|spettacolo|notizie|news|prezzi|prezzo|quotazione|risultati|partite|partita|classifica|manifestazioni)\b",
+            query_lower
+        )
+        if _temporal and _realworld:
+            return json.dumps({"tool": "internet_search_tool", "query": query})
+
+        # Internet search: richiesta esplicita di informazioni recenti/web anche senza marcatori temporali
+        if re.search(
+            r"\b(ultime notizie|breaking news|notizie di oggi|cosa è successo|chi ha vinto|chi vincerà|versione più recente|ultimo aggiornamento|prezzo attuale|quotazione attuale)\b",
+            query_lower
+        ):
+            return json.dumps({"tool": "internet_search_tool", "query": query})
 
         stop_pattern = re.compile(r"\b(stop|ferma|spegni|spegni la radio|spegni radio|spegnila|arresta|chiudi|disattiva|metti giù|muto)\b", re.IGNORECASE)
         prior_text = "".join(
@@ -319,21 +354,29 @@ Tools disponibili:
 
 STRATEGIA DI DECISIONE:
 
-1. VALUTA SE LA DOMANDA È CORRELATA AL CONTESTO:
-   - Se la domanda continua/approfondisce l'argomento precedente → usa il contesto per interpretarla
-   - Se la domanda è SU UN ARGOMENTO COMPLETAMENTE DIVERSO → ignora il contesto e analizza solo la nuova domanda
-   - Indicatori di cambio di argomento: parole come "invece", "adesso", "passiamo a", "dimenticati di", o richieste su temi totalmente diversi
+STEP 1 — CONTROLLA PRIMA SE LA DOMANDA RICHIEDE INTERNET (PRIORITÀ MASSIMA):
+Chiediti: "Questa informazione cambia nel tempo? Un AI addestrato nel 2024 potrebbe non saperla?"
+Se SÌ → usa SEMPRE internet_search_tool, INDIPENDENTEMENTE dalle altre keyword.
 
-2. CRITERI DI DECISIONE (usa SOLO uno):
+Esempi che richiedono SEMPRE internet_search_tool:
+- "che eventi ci saranno a [città] questo weekend/settimana/mese"
+- "qual è il prezzo di [asset] oggi/adesso"
+- "ultime notizie su [argomento]"
+- "chi ha vinto [partita/gara] ieri/oggi"
+- "cosa succede a [luogo] in questo periodo"
+- "versione più recente di [software]"
+- Qualsiasi domanda con: "questo weekend", "questa settimana", "oggi", "domani", "adesso", "attualmente", "ultimamente", "di recente" + fatto concreto del mondo reale
+
+STEP 2 — SE NON È UNA DOMANDA PER INTERNET, usa questi criteri (scegli SOLO uno):
 
    a) ANSIBLE/INFRASTRUCTURE (→ tool MCP):
       - Keyword: "playbook", "ansible", "server", "installazione", "configurazione", "deploy", "infra", "docker", "DevOps"
       - Usa: mcp_generate_ansible_playbook_tool, mcp_list_playbooks_tool, mcp_run_ansible_playbook, mcp_save_playbook_tool
 
    b) DOCUMENT SEARCH (→ search_documents):
-      - Keyword: "cerca", "trova", "ricerca", "dimmi", "informazioni", "cos'è", "spiegami", "trovo in", "cerca nel", "quali documenti", "parlano di"
-      - Anche pronomi come "questo", "quello" che si riferiscono al contesto precedente
-      - Quando: l'utente chiede informazioni contenute nei documenti
+      - Quando: l'utente chiede informazioni che potrebbero essere contenute nei documenti caricati
+      - Keyword tipiche: "nei documenti", "nel database", "cosa dicono i file", "cerca nel tuo DB"
+      - NON usare per: eventi reali, notizie, prezzi, fatti del mondo esterno
 
    c) DOCUMENT LISTING (→ list_documents):
       - Keyword: "quali documenti", "elenco", "lista", "quanti file", "cosa c'è", "quali file"
@@ -354,23 +397,23 @@ STRATEGIA DI DECISIONE:
    g) RADIO (→ radio_tool):
       - Keyword: "radio", "stazione", "ascolta", "ascoltare", "metti la radio", "riproduci radio", "Radio105", "RTL 102.5"
       - Quando: l'utente vuole ascoltare una radio o gestire le stazioni radio
-    
+
    h) METEO (→ meteo_tool):
-    - Keyword: "meteo", "tempo", "previsioni", "pioggia", "sole", "neve"
-    - Quando: l'utente vuole conoscere le informazioni meteorologiche
+      - Keyword: "meteo", "tempo", "previsioni", "pioggia", "sole", "neve", "temperatura"
+      - Quando: l'utente vuole conoscere le condizioni meteorologiche di una città
 
    i) FILESYSTEM / CODICE (→ terminal_tool):
       - Keyword: nomi di file con estensione (.py, .js, .ts, .yaml, ecc.), "mostrami il codice", "leggi il file", "analizza il file", "rifattorizza", "refactor", "cosa fa", "spiega questo file", "apri", "visualizza"
       - Quando: l'utente menziona un file specifico del progetto o vuole leggerne/analizzarne il codice
 
    j) NESSUN TOOL (→ "none"):
-      - Conversazioni, saluti, domande generiche
+      - Conversazioni, saluti, domande generiche, spiegazioni di concetti stabili e immutabili
       - Domande che richiedono di descrivere, spiegare, riassumere o analizzare il file temporaneo caricato
+      - Fatti storici consolidati che non cambiano nel tempo (es: "chi era Napoleone", "cos'è la fotosintesi")
 
 REGOLE IMPORTANTI:
 - Se è presente un file temporaneo e la domanda parla esplicitamente del file caricato, preferisci "none" e rispondi direttamente usando il contenuto del file
-- Se la domanda è AMBIGUA o correlata al contesto → preferisci "search_documents"
-- Se la domanda è su argomento diverso → decidi indipendentemente dal contesto
+- In caso di dubbio tra search_documents e internet_search_tool: se la risposta potrebbe cambiare domani → internet_search_tool
 - Rispondi SOLO in JSON valido, senza spiegazioni extra
 
 OUTPUT JSON:
