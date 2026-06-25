@@ -434,28 +434,169 @@ Domanda attuale: {query}
     return response["message"]["content"]
 
 
-def image_analyser(image_path: str, domanda: str = "Descrivi dettagliatamente cosa vedi in questa immagine e spiegami cosa viene raffigurato."):
-
-    print("🧠 Analisi dell'immagine in corso...")
-
+def _ocr_with_trocr(image_path: str, mcp_log_placeholder=None) -> str:
+    """
+    TrOCR (microsoft/trocr-base-handwritten) — modello specifico per testo manoscritto.
+    Molto più affidabile di LLaVA per corsivo e handwriting.
+    Processa l'immagine segmentandola in bande orizzontali (righe di testo).
+    """
     try:
-        response = ollama.chat(
-            model='llava',
-            messages=[
-                {"role": "system", "content": "Rispondi SEMPRE in Italiano"},
-                {
-                    'role': 'user',
-                    'content': domanda,
-                    'images': [image_path] # Puoi passare anche una lista di più immagini!
-                }
-            ]
-        )
+        from transformers import TrOCRProcessor, VisionEncoderDecoderModel
+        from PIL import Image
+        import torch
 
-        # Stampa la risposta dell'LLM
-        print("\n🤖 Risposta di Ollama:")
-        print(response)
-        return response['message']['content']
+        print("🔤 TrOCR: carico modello handwritten...")
+        if mcp_log_placeholder:
+            mcp_log_placeholder.caption(f"⚙️ Carico modello TrOCR per testo manoscritto...")
+        processor = TrOCRProcessor.from_pretrained("microsoft/trocr-base-handwritten")
+        model = VisionEncoderDecoderModel.from_pretrained("microsoft/trocr-base-handwritten")
+        model.eval()
+
+        img = Image.open(image_path).convert("RGB")
+        w, h = img.size
+
+        # Segmenta in bande orizzontali per simulare le righe di testo
+        # TrOCR è addestrato su singole righe — più bande = migliore accuratezza
+        num_bands = max(4, h // 80)
+        band_h = h // num_bands
+        lines = []
+
+        for i in range(num_bands):
+            mcp_log_placeholder.caption(f"⚙️ *Analizzando l'immagine con TrOCR — riga {i+1}/{num_bands}*")
+            y0 = i * band_h
+            y1 = min(y0 + band_h, h)
+            band = img.crop((0, y0, w, y1))
+
+            pixel_values = processor(images=band, return_tensors="pt").pixel_values
+            with torch.no_grad():
+                generated_ids = model.generate(pixel_values, max_new_tokens=64)
+            text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0].strip()
+            if text:
+                lines.append(text)
+
+        return "\n".join(lines)
 
     except Exception as e:
-        print(f"Errore durante l'elaborazione: {e}")
-        return f"Errore durante l'elaborazione dell'immagine: {e}"
+        print(f"⚠️ TrOCR fallito: {e}")
+        return ""
+
+
+def _ocr_with_tesseract(image_path: str, mcp_log_placeholder=None) -> str:
+    """
+    Tesseract OCR con preprocessing — affidabile solo per testo stampato/digitale.
+    Non riconosce corsivo o scrittura a mano.
+    """
+    try:
+        import pytesseract
+        from PIL import Image, ImageEnhance, ImageFilter
+
+        img = Image.open(image_path).convert("RGB")
+        w, h = img.size
+
+        if max(w, h) < 1500:
+            scale = max(2, 1500 // max(w, h))
+            img = img.resize((w * scale, h * scale), Image.LANCZOS)
+
+        gray = img.convert("L")
+        gray = ImageEnhance.Contrast(gray).enhance(2.5)
+        gray = gray.filter(ImageFilter.SHARPEN)
+        gray = gray.filter(ImageFilter.SHARPEN)
+        if mcp_log_placeholder:
+            mcp_log_placeholder.caption(f"⚙️ **Analizzando l'immagine con Tesseract OCR**")
+
+        text = pytesseract.image_to_string(gray, lang="ita+eng", config="--oem 3 --psm 3").strip()
+        if len(text.split()) < 5:
+            sparse = pytesseract.image_to_string(gray, lang="ita+eng", config="--oem 3 --psm 11").strip()
+            if len(sparse) > len(text):
+                text = sparse
+
+        lines = [l for l in text.splitlines() if len(l.strip()) > 1]
+        return "\n".join(lines)
+    except Exception as e:
+        print(f"⚠️ Tesseract OCR fallito: {e}")
+        return ""
+
+
+import subprocess as _sp
+_LLAVA_MODEL = "llava-llama3" if "llava-llama3" in _sp.run(
+    ["ollama", "list"], capture_output=True, text=True
+).stdout else "llava"
+
+
+def _llava_output_is_valid(text: str) -> bool:
+    """Controlla se l'output di LLaVA è un risultato sensato."""
+    words = text.split()
+    if len(words) < 5:
+        return False
+    # Rileva loop di ripetizioni: se una sequenza di 4 parole si ripete più di 2 volte
+    joined = " ".join(words)
+    for i in range(len(words) - 4):
+        phrase = " ".join(words[i:i+4])
+        if joined.count(phrase) > 2:
+            return False
+    return True
+
+
+def image_analyser_stream(image_path: str, domanda: str = "Descrivi cosa vedi in questa immagine.", mcp_log_placeholder=None):
+    """
+    Generatore per st.write_stream():
+    - Streamma i token LLaVA in real-time (visibili subito in UI)
+    - Dopo che LLaVA finisce, valida il risultato
+    - Se non valido, appende in streaming il fallback (Tesseract → TrOCR)
+    """
+    _text_request = re.search(
+        r"\b(testo|scritto|scrivi|leggi|trascrivi|parole|corsivo|lettera|cosa c['\s]è scritto)\b",
+        domanda.lower()
+    )
+    _base = (
+        f"{domanda}\n\nSe nell'immagine c'è testo scritto, leggilo e riportalo nella risposta."
+        if _text_request else domanda
+    )
+    prompt = f"{_base}\n\nRispondi esclusivamente in italiano."
+
+    chunks = []
+    try:
+        stream = ollama.chat(
+            model=_LLAVA_MODEL,
+            messages=[
+                {"role": "system", "content": "Sei un assistente visivo. Rispondi SEMPRE in italiano."},
+                {"role": "user", "content": prompt, "images": [image_path]}
+            ],
+            stream=True,
+            options={
+                "num_predict": 400,
+                "temperature": 0.35,
+                "repeat_penalty": 1.2,
+                "top_k": 40,
+                "top_p": 0.85,
+            }
+        )
+        for chunk in stream:
+            mcp_log_placeholder.caption(f"⚙️ **Analizzando l'immagine**")
+            token = chunk["message"]["content"]
+            yield token
+            chunks.append(token)
+    except Exception as e:
+        yield f"Errore LLaVA: {e}"
+        return
+
+    llava_result = "".join(chunks).strip()
+
+    if _llava_output_is_valid(llava_result):
+        return  # output valido, streaming già completato
+
+    # Fallback 1: Tesseract
+    yield "\n\n⚠️ Testo non leggibile, provo OCR...\n"
+    tesseract_text = _ocr_with_tesseract(image_path)
+    if tesseract_text:
+        yield tesseract_text
+        return
+
+    # Fallback 2: TrOCR
+    yield "\n⚠️ Provo TrOCR per testo manoscritto...\n"
+    trocr_text = _ocr_with_trocr(image_path, mcp_log_placeholder=mcp_log_placeholder)
+    if trocr_text:
+        yield trocr_text
+        return
+
+    yield "\nImpossibile analizzare l'immagine."
