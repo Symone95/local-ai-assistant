@@ -118,7 +118,7 @@ def execute_tool(tool_name: str, query: str = None, selected_doc=None, messages=
 
         return {
             "report_text": report_markdown,
-            "pdf": pdf_result
+            "pdf": pdf_result.get("file_path", "")
         }
     
     if tool_name == "radio_tool":
@@ -273,6 +273,9 @@ def tool_planner(query, messages=None, context=""):
 
         if re.search(r"\b(radio|stazione|stazioni|ascolta|ascoltiamo|ascoltare|riproduci|metti la radio|radio105|rtl 102\.5|rtl|deejay)\b", query_lower):
             return json.dumps({"tool": "radio_tool", "query": query})
+        
+        if re.search(r"\b(pdf|report|genera|crea|fornisci|scrivi)\b", query_lower):
+            return json.dumps({"tool": "generate_pdf_report", "query": query})
 
         # Internet search: segnali temporali espliciti + argomenti del mondo reale
         _temporal = re.search(
@@ -391,7 +394,7 @@ STEP 2 — SE NON È UNA DOMANDA PER INTERNET, usa questi criteri (scegli SOLO u
       - Usare SOLO se ESPLICITAMENTE richiesto
 
    f) PDF REPORT GENERATION (→ generate_pdf_report):
-      - Keyword: "genera report", "report pdf", "crea report", "genera documento", "report su"
+      - Keyword: "un pdf", "un report", "genera report", "report pdf", "crea report", "genera documento", "report su"
       - Quando: chiede un report PDF
 
    g) RADIO (→ radio_tool):
@@ -429,3 +432,30 @@ Domanda attuale: {query}
     )
 
     return response["message"]["content"]
+
+
+def image_analyser(image_path: str, domanda: str = "Descrivi dettagliatamente cosa vedi in questa immagine e spiegami cosa viene raffigurato."):
+
+    print("🧠 Analisi dell'immagine in corso...")
+
+    try:
+        response = ollama.chat(
+            model='llava',
+            messages=[
+                {"role": "system", "content": "Rispondi SEMPRE in Italiano"},
+                {
+                    'role': 'user',
+                    'content': domanda,
+                    'images': [image_path] # Puoi passare anche una lista di più immagini!
+                }
+            ]
+        )
+
+        # Stampa la risposta dell'LLM
+        print("\n🤖 Risposta di Ollama:")
+        print(response)
+        return response['message']['content']
+
+    except Exception as e:
+        print(f"Errore durante l'elaborazione: {e}")
+        return f"Errore durante l'elaborazione dell'immagine: {e}"

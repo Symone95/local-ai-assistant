@@ -2,6 +2,7 @@ import streamlit as st
 
 from mcp_client import mcp_tool_node
 from rag_engine import add_documents, reset_database, collection, get_file_hash
+from tools import image_analyser
 from utils.general import clean_code_content, clean_post_content, get_db_stats, convert_to_langchain_messages, load_file_text, extract_code_block
 import os
 import asyncio
@@ -198,6 +199,51 @@ if st.session_state.get("temp_file"):
     if st.sidebar.button("🗑️ Rimuovi file temporaneo", key="remove_temp_left"):
         st.session_state.temp_file = None
         st.experimental_rerun()
+
+
+# -- Upload immagini da elaborare
+st.sidebar.header("👁️ Analizzatore di immagini")
+
+# Widget per il caricamento dell'immagine
+uploaded_image = st.sidebar.file_uploader("Carica un'immagine (JPG, PNG)", type=["jpg", "jpeg", "png"])
+
+if uploaded_image:
+    # Mostra l'immagine caricata sulla UI
+    # st.image(uploaded_image, caption="Immagine caricata", use_container_width=True)
+    
+    # Crea un input di testo per fare una domanda specifica sull'immagine
+    domanda = st.text_input("Cosa vuoi sapere su questa immagine?", "Descrivi cosa vedi in questa immagine.")
+    
+    if st.button("Analizza"):
+        mcp_log_placeholder = st.empty()
+        with st.spinner("Sto guardando l'immagine..."):
+            
+            # 💡 Salva temporaneamente il file su disco perché Ollama legge i percorsi file
+            temp_dir = "temp_images"
+            os.makedirs(temp_dir, exist_ok=True)
+            temp_path = os.path.join(temp_dir, uploaded_image.name)
+            mcp_log_placeholder.caption(f"⚙️ **Image Tool:** Immagine caricata: {uploaded_image.name}")
+            
+            with open(temp_path, "wb") as f:
+                f.write(uploaded_image.getbuffer())
+            
+            try:
+                # Chiamata a Ollama con il modello multimodale
+                mcp_log_placeholder.caption(f"⚙️ **Analizzo immagine**")
+                res = image_analyser(temp_path, domanda)
+                mcp_log_placeholder.caption(f"⚙️ **Immagine analizzata**")
+                
+                # Mostra il risultato
+                st.subheader("🤖 Analisi dell'assistente:")
+                st.write(res)
+                
+            except Exception as e:
+                st.error(f"Errore: {e}")
+                
+            finally:
+                # Pulizia: rimuove il file temporaneo
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
 
 
 # --- Controllo radio ---

@@ -5,7 +5,8 @@ import os
 from datetime import datetime
 from langchain_core.messages import HumanMessage, AIMessage
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
-from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import cm
 import subprocess
 
 import pandas as pd
@@ -122,44 +123,62 @@ def load_file_text(uploaded_file, max_chars: int = 20000):
         text = text[:max_chars] + "\n\n...[troncato]"
     return text
 
+def _md_inline_to_rl(text: str) -> str:
+    """Converte formattazione inline markdown in tag ReportLab (XML-safe)."""
+    text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
+    text = re.sub(r"\*(.+?)\*", r"<i>\1</i>", text)
+    return text
+
+
 def generate_pdf_report(title: str, content: str):
     """
-    Genera un PDF nella cartella /reports e ritorna il path del file.
+    Genera un PDF nella cartella /reports convertendo markdown in stili ReportLab.
+    Ritorna un dict con file_path.
     """
-
-    # crea cartella se non esiste
     os.makedirs("reports", exist_ok=True)
 
-    # nome file con timestamp
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"reports/report_{timestamp}.pdf"
 
-    # crea documento
-    doc = SimpleDocTemplate(filename)
+    doc = SimpleDocTemplate(
+        filename,
+        topMargin=2 * cm, bottomMargin=2 * cm,
+        leftMargin=2 * cm, rightMargin=2 * cm
+    )
     styles = getSampleStyleSheet()
+
+    styles.add(ParagraphStyle(name="ReportH1", parent=styles["Title"], fontSize=20, spaceAfter=14, spaceBefore=0))
+    styles.add(ParagraphStyle(name="ReportH2", parent=styles["Heading2"], fontSize=14, spaceAfter=8, spaceBefore=16))
+    styles.add(ParagraphStyle(name="ReportH3", parent=styles["Heading3"], fontSize=12, spaceAfter=6, spaceBefore=10))
+    styles.add(ParagraphStyle(name="ReportBullet", parent=styles["BodyText"], leftIndent=18, spaceBefore=2, spaceAfter=2))
 
     story = []
 
-    # Titolo
-    story.append(Paragraph(title, styles["Title"]))
-    story.append(Spacer(1, 20))
-
-    # Data generazione
     date_str = datetime.now().strftime("%d/%m/%Y %H:%M")
     story.append(Paragraph(f"Generato il: {date_str}", styles["Italic"]))
-    story.append(Spacer(1, 20))
+    story.append(Spacer(1, 16))
 
-    # Contenuto: splittiamo per paragrafi
-    paragraphs = content.split("\n")
+    for line in content.split("\n"):
+        stripped = line.strip()
 
-    for p in paragraphs:
-        if p.strip() == "":
-            story.append(Spacer(1, 12))
+        if not stripped:
+            story.append(Spacer(1, 8))
+        elif stripped.startswith("### "):
+            story.append(Paragraph(_md_inline_to_rl(stripped[4:]), styles["ReportH3"]))
+        elif stripped.startswith("## "):
+            story.append(Paragraph(_md_inline_to_rl(stripped[3:]), styles["ReportH2"]))
+        elif stripped.startswith("# "):
+            story.append(Paragraph(_md_inline_to_rl(stripped[2:]), styles["ReportH1"]))
+        elif stripped.startswith(("- ", "* ")):
+            story.append(Paragraph(f"• {_md_inline_to_rl(stripped[2:])}", styles["ReportBullet"]))
+        elif re.match(r"^\d+\.\s", stripped):
+            text = re.sub(r"^\d+\.\s+", "", stripped)
+            story.append(Paragraph(f"• {_md_inline_to_rl(text)}", styles["ReportBullet"]))
         else:
-            story.append(Paragraph(p, styles["BodyText"]))
-            story.append(Spacer(1, 12))
+            story.append(Paragraph(_md_inline_to_rl(stripped), styles["BodyText"]))
+            story.append(Spacer(1, 4))
 
-    # build pdf
     doc.build(story)
 
     return {

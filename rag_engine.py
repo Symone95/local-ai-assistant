@@ -378,24 +378,91 @@ Domanda standalone:
     return rewritten
 
 
+def _report_needs_web(query: str) -> bool:
+    """
+    Decide se il topic del report richiede dati freschi da internet.
+    Temi storici/scientifici/concettuali non ne hanno bisogno.
+    """
+    q = query.lower()
+    temporal = re.search(
+        r"\b(oggi|adesso|attualmente|di recente|ultimamente|ultime|recenti|"
+        r"questo anno|quest'anno|2025|2026|corrente|in corso)\b", q
+    )
+    dynamic = re.search(
+        r"\b(prezzi|prezzo|notizie|news|eventi|risultati|classifica|"
+        r"quotazione|mercato|aggiornamenti|statistiche recenti)\b", q
+    )
+    return bool(temporal or dynamic)
+
+
 def generate_report_content(query: str, messages=None):
     """
-    Fa scrivere all'LLM il contenuto del report in modo strutturato.
+    Genera il contenuto del report. Usa internet solo per topic che richiedono
+    dati aggiornati (prezzi, notizie, eventi); per tutto il resto usa la
+    conoscenza del modello per evitare di iniettare snippet spazzatura.
     """
+    web_section = ""
+    if _report_needs_web(query):
+        from dto.managers.internet_search_manager import internet_search_tool as web_search
+        try:
+            print("🔍 Cerco informazioni online per il report...")
+            raw = web_search(query)
+            web_section = (
+                "DATI AGGIORNATI DA INTERNET (usa solo fatti verificabili, "
+                "ignora pubblicità, video, app e contenuti promozionali):\n"
+                f"{raw}\n"
+            )
+        except Exception as e:
+            print(f"⚠️ Ricerca web fallita: {e}")
 
-    prompt = f"""
-Sei un assistente che scrive report professionali.
+    history_section = ""
+    if messages:
+        recent = messages[-4:] if len(messages) > 4 else messages
+        lines = []
+        for m in recent:
+            if isinstance(m, dict):
+                role, content = m.get("role", "user"), m.get("content", "")
+            else:
+                role, content = getattr(m, "type", "user"), getattr(m, "content", "")
+            lines.append(f"{role}: {content[:300]}")
+        history_section = "CONTESTO CONVERSAZIONALE:\n" + "\n".join(lines) + "\n"
 
-Scrivi un report ben strutturato in italiano con:
-- Titolo
-- Introduzione
-- Sezioni con sottotitoli
-- Conclusione
+    prompt = f"""Sei un esperto redattore di report professionali.
 
-Argomento del report:
-{query}
+{web_section}{history_section}
+Scrivi un report professionale, completo e accurato in italiano sull'argomento richiesto.
+Usa la tua conoscenza enciclopedica come fonte primaria.
+{"Integra i dati da internet solo se sono fatti concreti e verificabili (no video, no app, no pubblicità, no opinioni)." if web_section else ""}
 
-Produci SOLO il testo del report in markdown.
+Struttura OBBLIGATORIA in markdown:
+
+# [Titolo descrittivo del report]
+
+## Introduzione
+[Contestualizzazione e importanza del tema]
+
+## [Prima sezione tematica]
+[Contenuto approfondito con dettagli e dati]
+
+## [Seconda sezione tematica]
+[Contenuto approfondito]
+
+## [Ulteriori sezioni se necessarie]
+[Contenuto]
+
+## Conclusioni
+[Sintesi e considerazioni finali]
+
+Regole TASSATIVE:
+- Scrivi SOLO in italiano
+- Usa # per il titolo, ## per le sezioni, ### per sottosezioni
+- Usa **grassetto** per termini chiave e concetti importanti
+- Usa - per gli elenchi puntati
+- NON citare video, app, canali YouTube, libri specifici o siti web
+- NON inserire link o riferimenti a contenuti multimediali
+- Sii preciso, professionale e approfondito
+
+Argomento: {query}
 """
 
     response = ollama.chat(
@@ -403,8 +470,7 @@ Produci SOLO il testo del report in markdown.
         messages=[{"role": "user", "content": prompt}]
     )
 
-    report_text = response["message"]["content"]
-    return report_text
+    return response["message"]["content"]
 
 
 def rerank_chunks(query, chunks):
