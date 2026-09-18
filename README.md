@@ -121,6 +121,7 @@ git clone git@github.com:Symone95/local-ai-assistant.git
 cd local-ai-assistant
 python -m venv venv
 venv/bin/pip install -r requirements.txt
+cp .env.example .env   # poi inserisci le tue chiavi
 ```
 
 > `requirements.txt` copre il nucleo dell'app. Le funzionalità opzionali richiedono anche
@@ -135,8 +136,10 @@ venv/bin/streamlit run app_with_mcp.py
 
 ## Note
 
-- La chiave OpenWeatherMap è attualmente hardcoded in
-  [dto/managers/meteo_manager.py](dto/managers/meteo_manager.py) — conviene spostarla in una
-  variabile d'ambiente prima di pubblicare il progetto.
+- Le chiavi API vivono in un file `.env` (ignorato da git), letto con `python-dotenv`.
+  [.env.example](.env.example) elenca le variabili attese: oggi solo `OPENWEATHER_API_KEY`,
+  necessaria al `meteo_tool` (chiave gratuita su
+  [openweathermap.org](https://home.openweathermap.org/api_keys)). Senza la variabile l'app parte
+  lo stesso: è solo il tool meteo a rispondere con un messaggio di configurazione mancante.
 - Tutto gira in locale: nessun dato dei documenti lascia la macchina, tranne le query esplicite
   verso i servizi web (ricerca internet, meteo, TTS).
