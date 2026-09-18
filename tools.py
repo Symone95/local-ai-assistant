@@ -3,7 +3,7 @@ import ollama
 import re
 from rag_engine import get_files_with_upload_date_tool, get_files_in_db_tool, conversational_search_tool, \
     summarize_document_tool, extract_filename_from_query, generate_report_content
-from utils.general import generate_pdf_report, extract_city_from_query, extract_path_with_llm
+from utils.general import generate_pdf_report, extract_city_from_query, extract_path_with_llm, ottieni_dati_crypto
 from dto.managers.radio_manager import radio_manager
 from dto.managers.meteo_manager import meteo_manager
 from dto.managers.terminal_manager import terminal_manager
@@ -252,6 +252,21 @@ def execute_tool(tool_name: str, query: str = None, selected_doc=None, messages=
             "context": context + f"\n\nRisultati di ricerca internet:\n{risultato_web}"
         }
 
+    if tool_name == "crypto_analyzer_tool":
+        # 1. Estrai i dati tecnici
+        dati = ottieni_dati_crypto(query)  # Il router deve estrarre l'ID della crypto (es: 'bitcoin')
+
+        # 2. Sfrutta il tool Google che hai già implementato per cercare le news
+        notizie = internet_search_tool(f"ultime notizie {query} mercato criptovalute")
+
+        # 3. Costruisci il contesto arricchito per il nodo LLM successivo
+        contesto_finanziario = f"DATI_CRYPTO:{dati}\nNOTIZIE_CRYPTO:{notizie}"
+
+        return {
+            "tool_result": {"content": contesto_finanziario},
+            "context": context + f"\n\nContext Finanziario:\n{contesto_finanziario}"
+        }
+
     return {"error": "Tool non trovato"}
 
 
@@ -259,6 +274,9 @@ def tool_planner(query, messages=None, context=""):
     
     if query:
         query_lower = query.lower()
+
+        if re.search(r"\b(cripto|analizza|btc|eth|criptovalute)\b", query_lower):
+            return json.dumps({"tool": "crypto_analyzer_tool", "query": query})
 
         if re.search(r"\b(meteo|tempo|previsioni|pioggia|sole|neve|vento|temperatura|umidità)\b", query_lower):
             return json.dumps({"tool": "meteo_tool", "query": query})

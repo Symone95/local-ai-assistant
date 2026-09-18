@@ -147,3 +147,33 @@ Rispondi ora fornendo una risposta chiara e completa, terminando SEMPRE con le f
             "final_answer": response.content,
             "messages": [response]
         }
+
+
+
+
+def genera_prompt_finanziario(crypto_name, dati_tecnici, notizie_web):
+    prompt = f"""
+    Sei un Analista Finanziario Esperto specializzato nel mercato delle Criptovalute.
+    Il tuo compito è analizzare la seguente criptovaluta e fornire una raccomandazione motivata: COMPRARE, VENDERE o ATTENDERE (HOLD).
+
+    NOTIZIE DI MERCATO RECENTI:
+    {notizie_web}
+
+    DATI TECNICI IN TEMPO REALE (Valuta: EUR):
+    - Prezzo Attuale: {dati_tecnici.get('prezzo_attuale')} €
+    - Variazione nelle ultime 24 ore: {dati_tecnici.get('variazione_24h')}%
+    - Volume di Trading 24h: {dati_tecnici.get('volume_24h')} €
+
+    LINEE GUIDA PER IL VERDETTO:
+    1. Sii oggettivo e prudente. Non promettere guadagni certi.
+    2. Se le notizie sono estremamente negative (FUD, problemi legali), prediligi un verdetto di ATTENDERE o VENDERE.
+    3. Se il volume è in forte crescita e la variazione a 24h è positiva unita a news rialziste, valuta il COMPRARE impostando un livello di stop-loss logico.
+    4. Includi SEMPRE un Disclaimer Finanziario alla fine del report.
+
+    Fornisci l'analisi strutturata in capitoli Markdown:
+    ### 📊 Analisi di Mercato per {crypto_name}
+    - **Panoramica Tecnica**
+    - **Analisi del Sentiment (News)**
+    - **Verdetto Finale ed Esecuzione**
+    """
+    return prompt

@@ -381,3 +381,34 @@ def clean_post_content(text: str) -> str:
     while kept and not kept[-1].strip():
         kept.pop()
     return "\n".join(kept)
+
+
+import requests
+
+def ottieni_dati_crypto(crypto_id: str) -> dict:
+    """
+    Estrae dati di mercato in tempo reale per una crypto (es. 'bitcoin', 'ethereum').
+    """
+    url = f"https://api.coingecko.com/api/v3/coins/markets"
+    params = {
+        "vs_currency": "eur",
+        "ids": crypto_id.lower(),
+        "order": "market_cap_desc",
+        "sparkline": "false",
+        "price_change_percentage": "24h,7d"
+    }
+    try:
+        response = requests.get(url, params=params)
+        data = response.json()
+        if data:
+            crypto = data[0]
+            return {
+                "prezzo_attuale": crypto["current_price"],
+                "cap_mercato": crypto["market_cap"],
+                "volume_24h": crypto["total_volume"],
+                "variazione_24h": crypto["price_change_percentage_24h"],
+                "variazione_7d": crypto["price_change_percentage_7d_in_currency"] if "price_change_percentage_7d_in_currency" in crypto else "N/D"
+            }
+        return {"errore": "Crypto non trovata."}
+    except Exception as e:
+        return {"errore": str(e)}

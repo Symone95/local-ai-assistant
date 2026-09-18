@@ -77,7 +77,7 @@ graph.add_edge("direct_llm_answer", END)
 app = graph.compile()
 
 ## FE
-st.set_page_config(page_title="Local RAG Chat", layout="wide")  # Titolo del tab
+st.set_page_config(page_title="Local AI Assistant", layout="wide")  # Titolo del tab
 
 # TODO: INTEGRARE QUESTA PARTE PER CONVERSARE DIRETTAMENTE CON LLM
 #if "assistant_speaking" not in st.session_state:
@@ -118,7 +118,7 @@ if st.sidebar.button("🗑️ Reset database"):
     st.sidebar.success("Database cancellato!")
     st.rerun()
 
-st.title("🤖 Chat con i tuoi PDF") #  (Ollama + ChromaDB)
+st.title("🤖 Local AI Assistant") #  (Ollama + ChromaDB)
 
 # --- Sidebar Upload PDF ---
 st.sidebar.header("📄 Carica documento")
