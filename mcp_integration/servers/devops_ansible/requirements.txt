@@ -1,0 +1,4 @@
+# Dipendenze del solo server MCP DevOps-Ansible.
+# Se lo si esegue con il venv dell'app (default), sono gia' soddisfatte.
+mcp>=1.27.0
+ollama>=0.6.1

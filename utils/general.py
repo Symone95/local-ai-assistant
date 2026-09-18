@@ -301,6 +301,37 @@ def extract_path_with_llm(query: str, current_file: str = "") -> str:
         return ""
 
 
+def loads_json_loose(raw):
+    """
+    Interpreta il JSON prodotto da un LLM, tollerando le forme che json.loads() rifiuta:
+    blocchi markdown (```json ... ```) e testo di contorno prima o dopo l'oggetto.
+    Ritorna il dict, oppure None se non si riesce a estrarre nulla di valido.
+    """
+    import json
+    import re
+
+    if not raw or not isinstance(raw, str):
+        return None
+
+    candidate = raw.strip()
+    fenced = re.search(r"```(?:json)?\s*(.*?)```", candidate, re.DOTALL)
+    if fenced:
+        candidate = fenced.group(1).strip()
+
+    try:
+        parsed = json.loads(candidate)
+    except (json.JSONDecodeError, TypeError):
+        match = re.search(r"\{.*\}", candidate, re.DOTALL)
+        if not match:
+            return None
+        try:
+            parsed = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            return None
+
+    return parsed if isinstance(parsed, dict) else None
+
+
 def extract_code_block(text):
     """
     Parsa una risposta markdown ed estrae le parti attorno al code block.

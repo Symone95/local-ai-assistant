@@ -211,3 +211,26 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# ---------------------------------------------------------------------------
+# Local AI Assistant — artefatti locali, mai da committare
+# ---------------------------------------------------------------------------
+
+# Segreti: le chiavi vivono in .env, il modello vuoto (.env.example) resta versionato
+.env
+!.env.example
+
+# Dati dell'utente prodotti a runtime.
+# Nota: git non supporta commenti a fine riga, ogni pattern sta da solo.
+# chroma_db/   = database vettoriale con i PDF indicizzati
+# reports/     = report PDF generati dalla chat
+# temp_images/ = immagini caricate per l'analisi multimodale
+# *.mp3        = audio del text-to-speech (nome casuale, scritto nella cwd)
+chroma_db/
+reports/
+temp_images/
+*.mp3
+
+# Server MCP: playbook generati e inventory con gli host del proprio ambiente
+ansible_memory/
+inventory.ini

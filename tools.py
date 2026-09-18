@@ -44,9 +44,9 @@ TOOLS = [
         "input": ""
     },
     {
-        "name": "mcp_run_ansible_playbook",
-        "description": "Esegue un playbook Ansible in locale o su inventory remoto",
-        "input": "playbook_path, inventory_path"
+        "name": "mcp_run_playbook_tool",
+        "description": "Esegue un playbook Ansible gia' salvato, indicandone il nome (senza estensione)",
+        "input": "name"
     },
     {
         "name": "mcp_generate_ansible_playbook_tool",
@@ -275,6 +275,17 @@ def tool_planner(query, messages=None, context=""):
     if query:
         query_lower = query.lower()
 
+        # Ansible/MCP: prima delle altre regole, perche' "genera un playbook" verrebbe
+        # altrimenti intercettato da generate_pdf_report e "playbook.yml" da terminal_tool.
+        if re.search(r"\b(ansible|playbook|playbooks)\b", query_lower):
+            if re.search(r"\b(elenca|elencami|lista|listami|quali|quanti|mostra|mostrami|disponibili|salvati)\b", query_lower):
+                return json.dumps({"tool": "mcp_list_playbooks_tool", "query": query})
+            if re.search(r"\b(esegui|eseguilo|lancia|lancialo|avvia|avvialo|run|applica)\b", query_lower):
+                return json.dumps({"tool": "mcp_run_playbook_tool", "query": query})
+            if re.search(r"\b(salva|salvalo|memorizza|conserva)\b", query_lower):
+                return json.dumps({"tool": "mcp_save_playbook_tool", "query": query})
+            return json.dumps({"tool": "mcp_generate_ansible_playbook_tool", "query": query})
+
         if re.search(r"\b(cripto|analizza|btc|eth|criptovalute)\b", query_lower):
             return json.dumps({"tool": "crypto_analyzer_tool", "query": query})
 
@@ -392,7 +403,7 @@ STEP 2 — SE NON È UNA DOMANDA PER INTERNET, usa questi criteri (scegli SOLO u
 
    a) ANSIBLE/INFRASTRUCTURE (→ tool MCP):
       - Keyword: "playbook", "ansible", "server", "installazione", "configurazione", "deploy", "infra", "docker", "DevOps"
-      - Usa: mcp_generate_ansible_playbook_tool, mcp_list_playbooks_tool, mcp_run_ansible_playbook, mcp_save_playbook_tool
+      - Usa: mcp_generate_ansible_playbook_tool, mcp_list_playbooks_tool, mcp_run_playbook_tool, mcp_save_playbook_tool
 
    b) DOCUMENT SEARCH (→ search_documents):
       - Quando: l'utente chiede informazioni che potrebbero essere contenute nei documenti caricati

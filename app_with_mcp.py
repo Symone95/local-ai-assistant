@@ -1,6 +1,6 @@
 import streamlit as st
 
-from mcp_client import mcp_tool_node
+from mcp_integration.client import mcp_tool_node
 from rag_engine import add_documents, reset_database, collection, get_file_hash
 from tools import image_analyser_stream
 from utils.general import clean_code_content, clean_post_content, get_db_stats, convert_to_langchain_messages, load_file_text, extract_code_block

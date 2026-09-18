@@ -1,12 +1,45 @@
 from rag_engine import build_chat_history, rewrite_query_with_memory
-from tools import tool_planner, execute_tool
+from tools import tool_planner, execute_tool, TOOLS
+from utils.general import loads_json_loose
 from dto.agent_state import AgentState
 import json
+import re
 
 from langchain_ollama import ChatOllama
 llm = ChatOllama(model="qwen2.5-coder:3b",  # llama3"
                  num_ctx=4096,              # con questo dico di non andare oltre i 4k di token
                 )
+
+
+KNOWN_TOOLS = {t["name"] for t in TOOLS}
+
+
+def parse_tool_plan(raw: str) -> dict:
+    """
+    Estrae il piano JSON dalla risposta del planner.
+
+    L'LLM spesso incapsula il JSON in un blocco markdown (```json ... ```) o vi premette una frase:
+    un json.loads() diretto fallisce e il piano viene scartato. Qui si isola il primo oggetto JSON
+    presente nel testo e si valida il nome del tool contro il registro.
+    """
+    if not raw:
+        return {"tool": "none"}
+
+    plan = loads_json_loose(raw)
+    if plan is None:
+        print(f"⚠️  Piano del tool non interpretabile, uso 'none'. Risposta grezza: {raw[:200]!r}")
+        return {"tool": "none"}
+
+    if not isinstance(plan, dict) or "tool" not in plan:
+        return {"tool": "none"}
+
+    tool = str(plan.get("tool", "none")).strip()
+    if tool != "none" and tool not in KNOWN_TOOLS:
+        print(f"⚠️  Il planner ha scelto un tool inesistente ({tool!r}), uso 'none'.")
+        return {"tool": "none"}
+
+    plan["tool"] = tool
+    return plan
 
 
 def router_node(state: AgentState):
@@ -15,13 +48,15 @@ def router_node(state: AgentState):
     context = state.get("context", "")
     plan = tool_planner(state["query"], messages=messages, context=context)
 
-    try:
-        plan = json.loads(plan)
-    except:
-        plan = {"tool": "none"}
+    plan = parse_tool_plan(plan)
 
     print("TOOL PLANNER HA DECISO DI USARE IL TOOL: %s" % plan["tool"])
-    state["tool_plan"] = {"tool": plan["tool"]}
+    # Conserva anche query e params: servono ai tool MCP, che altrimenti ricevono args vuoti
+    state["tool_plan"] = {
+        "tool": plan["tool"],
+        "query": plan.get("query") or state["query"],
+        "args": plan.get("params") or plan.get("args") or {},
+    }
     return state
 
 

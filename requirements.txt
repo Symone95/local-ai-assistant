@@ -123,3 +123,11 @@ wikipedia==1.4.0
 xxhash==3.6.0
 zipp==3.23.1
 zstandard==0.25.0
+
+# Dipendenze dell'entrypoint app_with_mcp.py, importate a livello di modulo
+mcp==1.27.0
+streamlit-mic-recorder==0.0.8
+edge-tts==7.2.8
+openai-whisper==20250625
+langchain-community==0.4.2
+duckduckgo-search==8.1.1
