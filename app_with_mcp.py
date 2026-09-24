@@ -6,8 +6,12 @@ from tools import image_analyser_stream
 from utils.general import clean_code_content, clean_post_content, get_db_stats, convert_to_langchain_messages, load_file_text, extract_code_block
 import os
 import asyncio
+import json
+import uuid
 from nodes import *
 from langgraph.graph import StateGraph, END
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.types import Command
 from langchain_core.messages import HumanMessage
 
 from streamlit_mic_recorder import mic_recorder
@@ -85,7 +89,17 @@ graph.add_edge("direct_llm_answer", END)
 #            |
 #           END
 
-app = graph.compile()
+@st.cache_resource
+def compile_app():
+    """
+    Il checkpointer serve all'human-in-the-loop: conserva lo stato del grafo mentre l'utente
+    decide se approvare. Streamlit rilancia lo script a ogni interazione, quindi la compilazione
+    va messa in cache: altrimenti ogni click creerebbe un checkpointer nuovo e vuoto.
+    """
+    return graph.compile(checkpointer=InMemorySaver())
+
+
+app = compile_app()
 
 ## FE
 st.set_page_config(page_title="Local AI Assistant", layout="wide")  # Titolo del tab
@@ -272,6 +286,34 @@ for msg in st.session_state.messages:
     st.chat_message(msg["role"]).write(msg["content"])
 
 
+# Identifica la conversazione per il checkpointer: serve a riprendere il grafo dopo l'approvazione
+if "thread_id" not in st.session_state:
+    st.session_state.thread_id = str(uuid.uuid4())
+
+graph_config = {"configurable": {"thread_id": st.session_state.thread_id}}
+
+
+# --- Human-in-the-loop: richiesta di approvazione in sospeso ---
+# Il grafo si e' fermato dentro mcp_tool prima di eseguire un'azione che tocca l'esterno.
+# La seconda condizione evita di ridisegnare il pannello nel rerun in cui la decisione e' gia' presa
+richiesta = st.session_state.get("approvazione_richiesta")
+if richiesta and "hitl_decisione" not in st.session_state:
+    with st.chat_message("assistant"):
+        st.warning(f"🛑 **Serve il tuo via libera.** {richiesta.get('descrizione', '')}")
+        st.caption(f"Tool: `{richiesta.get('tool')}` — argomenti esatti che verranno usati:")
+        st.code(json.dumps(richiesta.get("args", {}), indent=2, ensure_ascii=False), language="json")
+
+        col_ok, col_no = st.columns(2)
+        if col_ok.button("✅ Esegui", key="hitl_ok", type="primary"):
+            # Si rimandano indietro gli stessi argomenti mostrati: cio' che l'utente approva
+            # e' esattamente cio' che verra' eseguito.
+            st.session_state.hitl_decisione = {"approvato": True, "args": richiesta.get("args", {})}
+            st.rerun()
+        if col_no.button("❌ Annulla", key="hitl_no"):
+            st.session_state.hitl_decisione = {"approvato": False}
+            st.rerun()
+
+
 # Input utente
 query = st.chat_input("Fai una domanda sui documenti o usa il file uploader temporaneo qui sopra", key="chat_input")
 
@@ -279,8 +321,24 @@ if audio:
     with st.spinner("Trascrizione vocale..."):
         query = f"🎤 {transcribe_audio(audio['bytes'])}"
 
-if query:
-    st.chat_message("user").write(query)
+# Una decisione presa sul pannello di approvazione riprende il grafo invece di iniziare un giro nuovo
+decisione_hitl = st.session_state.pop("hitl_decisione", None)
+in_ripresa = decisione_hitl is not None
+if in_ripresa:
+    query = st.session_state.get("query_in_sospeso", "")
+    st.session_state.pop("approvazione_richiesta", None)
+
+if query or in_ripresa:
+    if not in_ripresa:
+        # Ogni nuova domanda gira su un thread pulito: lo stato `messages` usa il reducer
+        # add_messages, quindi riusare il thread accumulerebbe la storia a ogni turno.
+        # Se c'era un'approvazione in sospeso e l'utente ha chiesto altro, viene abbandonata.
+        st.session_state.pop("approvazione_richiesta", None)
+        st.session_state.pop("query_in_sospeso", None)
+        st.session_state.thread_id = str(uuid.uuid4())
+        graph_config = {"configurable": {"thread_id": st.session_state.thread_id}}
+
+        st.chat_message("user").write(query)
 
     temp_file_context = st.session_state.get("temp_file", {})
     use_temp_context = st.session_state.get("use_temp_context", True)
@@ -322,7 +380,7 @@ if query:
         unsafe_allow_html=True,
     )
 
-    async def get_streaming_response():
+    async def get_streaming_response(graph_input):
         full_response = ""
         final_state = None
 
@@ -347,14 +405,7 @@ if query:
             code_detected = False
 
             # Usiamo astream_events per intercettare i singoli token e i nostri eventi custom
-            async for event in app.astream_events({
-                "query": query,
-                "messages": history + [current_query_msg],
-                "context": context_text,
-                "selected_doc": selected_doc,
-                "tool_result": {},
-                "final_answer": ""
-            }, version="v2"):
+            async for event in app.astream_events(graph_input, version="v2", config=graph_config):
 
                 # print("event: ", event["event"])
                 # ── 🤖 INTERCETTAZIONE EVENTI PERSONALIZZATI DA MCP ──
@@ -452,15 +503,42 @@ if query:
                         file_name="report.pdf",
                         mime="application/pdf"
                     )
-        tts_file = await generate_tts(full_response)
-        st.audio(tts_file)
+        if full_response.strip():
+            tts_file = await generate_tts(full_response)
+            st.audio(tts_file)
         return full_response
 
+    # Ripresa dopo una decisione dell'utente, oppure giro nuovo a partire dalla domanda
+    if in_ripresa:
+        graph_input = Command(resume=decisione_hitl)
+    else:
+        graph_input = {
+            "query": query,
+            "messages": history + [current_query_msg],
+            "context": context_text,
+            "selected_doc": selected_doc,
+            "tool_result": {},
+            "final_answer": ""
+        }
+
     # Esegue il loop asincrono
-    final_answer = asyncio.run(get_streaming_response())
+    final_answer = asyncio.run(get_streaming_response(graph_input))
+
+    # Il grafo si e' fermato su un interrupt? Allora c'e' un'approvazione da chiedere.
+    snapshot = app.get_state(graph_config)
+    interruzioni = [i for task in snapshot.tasks for i in task.interrupts]
+
+    if interruzioni:
+        st.session_state.approvazione_richiesta = interruzioni[0].value
+        st.session_state.query_in_sospeso = query
+        if not in_ripresa:
+            st.session_state.messages.append({"role": "user", "content": query})
+        st.rerun()
 
     # Salviamo in session_state nel formato Streamlit per la visualizzazione al prossimo rerun
-    st.session_state.messages.append({"role": "user", "content": query})
+    st.session_state.pop("query_in_sospeso", None)
+    if not in_ripresa:
+        st.session_state.messages.append({"role": "user", "content": query})
     st.session_state.messages.append({"role": "assistant", "content": final_answer})
 
 

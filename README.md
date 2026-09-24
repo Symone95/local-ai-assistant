@@ -47,6 +47,15 @@ playbook Ansible via MCP…).
 | `crypto_analyzer_tool` | Dati di mercato di una criptovaluta + notizie recenti, per un'analisi finanziaria |
 | `mcp_*` | Genera, salva, elenca ed esegue playbook **Ansible** tramite il server MCP incluso in [mcp_integration/](mcp_integration/) |
 
+### 🛑 Human-in-the-loop sulle azioni che toccano l'esterno
+- I tool che modificano qualcosa fuori dall'app (di serie `run_playbook_tool` e `bash_tool`) non
+  partono da soli: il grafo si **sospende** e la chat mostra tool, argomenti esatti e due pulsanti.
+- È il meccanismo nativo di LangGraph — `interrupt()` più un checkpointer — non un finto prompt di
+  conferma: lo stato resta congelato sul checkpoint finché non arriva la decisione.
+- Viene eseguito **esattamente ciò che è stato approvato**: gli argomenti mostrati tornano indietro
+  con la conferma, così una nuova risoluzione non può sostituirli.
+- La lista dei tool da approvare si cambia da `.env` con `MCP_APPROVAL_TOOLS`.
+
 ### 🎙️ Voce, 👁️ immagini, 📂 file al volo
 - **Speech-to-text**: registrazione dal microfono e trascrizione locale con Whisper.
 - **Text-to-speech**: la risposta viene letta ad alta voce con `edge-tts` (voce italiana).
@@ -77,7 +86,8 @@ playbook Ansible via MCP…).
   markdown e scarta i tool inesistenti; il piano conserva anche `query` e `params`.
 - **`tool`** — esegue lo strumento scelto e mette il risultato nello stato.
 - **`mcp_tool`** — instrada le richieste `mcp_*` al server MCP su stdio, completando gli argomenti
-  mancanti in base all'`inputSchema` del tool.
+  mancanti in base all'`inputSchema` del tool e sospendendo il grafo se il tool richiede
+  approvazione umana.
 - **`llm`** — compone la risposta finale a partire da risultato del tool, contesto e storia della
   chat, chiudendo sempre con le fonti citate.
 - **`direct_llm_answer`** — scorciatoia per small talk e domande generiche, senza tool né RAG.
@@ -170,6 +180,41 @@ Due variabili opzionali nel `.env` permettono di cambiare tutto senza toccare il
 Il client passa al sottoprocesso `cwd = MCP_SERVER_DIR`: il server usa path relativi, quindi i
 playbook finiscono in `mcp_integration/servers/devops_ansible/ansible_memory/` (ignorata da git,
 come `inventory.ini`).
+
+### Approvazione umana (human-in-the-loop)
+
+Generare un playbook è innocuo; eseguirlo no. I tool elencati in `APPROVAL_REQUIRED_TOOLS`
+([client.py:46](mcp_integration/client.py#L46), configurabili con `MCP_APPROVAL_TOOLS`) non vengono
+invocati finché una persona non dà il via libera.
+
+```
+utente: "esegui il playbook nginx"
+   │
+   ├─ router → mcp_tool: risolve gli argomenti → {"name": "nginx"}
+   │
+   ├─ interrupt()  ⏸  il grafo si ferma, lo stato va sul checkpointer
+   │
+   ├─ la chat mostra tool, argomenti e i pulsanti ✅ Esegui / ❌ Annulla
+   │
+   └─ Command(resume={"approvato": True, "args": {...}}) ▶ il nodo riparte ed esegue
+```
+
+Tre dettagli che rendono il meccanismo affidabile:
+
+- **L'app è compilata con un checkpointer** (`InMemorySaver`) dentro `@st.cache_resource`
+  ([app_with_mcp.py:88](app_with_mcp.py#L88)). Streamlit rilancia lo script a ogni click: senza la
+  cache, ogni interazione creerebbe un checkpointer nuovo e vuoto, perdendo la sospensione.
+- **Si esegue ciò che è stato approvato.** Alla ripresa LangGraph riesegue il nodo da capo, quindi
+  una nuova risoluzione degli argomenti potrebbe produrre valori diversi da quelli mostrati. Gli
+  argomenti approvati tornano dentro il `resume` e hanno la precedenza.
+- **`interrupt()` sta fuori dalla sessione MCP.** Sospende sollevando un'eccezione di controllo: se
+  attraversasse il task group `anyio` del client stdio verrebbe incapsulata in un `ExceptionGroup` e
+  LangGraph non la riconoscerebbe più. Per questo gli schemi dei tool sono letti una volta e messi
+  in cache, così la risoluzione degli argomenti non richiede una sessione aperta.
+
+Ogni domanda nuova gira su un `thread_id` nuovo (lo stato `messages` usa il reducer `add_messages`,
+riusare il thread duplicherebbe la storia); il thread viene conservato solo per la ripresa. Se
+l'utente ignora la richiesta e chiede altro, l'approvazione in sospeso viene abbandonata.
 
 ### Usare un altro server MCP
 

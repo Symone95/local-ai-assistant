@@ -9,6 +9,8 @@ from mcp.client.stdio import stdio_client, StdioServerParameters
 from mcp import ClientSession
 from contextlib import asynccontextmanager
 from langchain_core.messages import HumanMessage
+from langgraph.errors import GraphBubbleUp
+from langgraph.types import interrupt
 
 from dto.agent_state import AgentState
 from utils.general import extract_code_block, clean_code_content, loads_json_loose
@@ -39,6 +41,19 @@ async def mcp_session():
 
 
 # Nomi di parametro che si accontentano della domanda dell'utente cosi' com'e'...
+# Tool che non partono senza approvazione umana: quelli che agiscono fuori dall'app.
+# Sovrascrivibile da .env, es. MCP_APPROVAL_TOOLS="run_playbook_tool,bash_tool,deploy_tool"
+APPROVAL_REQUIRED_TOOLS = {
+    nome.strip()
+    for nome in os.getenv("MCP_APPROVAL_TOOLS", "run_playbook_tool,bash_tool").split(",")
+    if nome.strip()
+}
+
+DESCRIZIONI_APPROVAZIONE = {
+    "run_playbook_tool": "Sto per eseguire un playbook Ansible: modifichera' davvero la macchina o l'inventory di destinazione.",
+    "bash_tool": "Sto per eseguire un comando shell sulla macchina che ospita il server MCP.",
+}
+
 FREE_TEXT_FIELDS = {"query", "input", "prompt", "request", "task", "description"}
 # ...e nomi che vogliono invece un blocco di codice/contenuto prodotto in precedenza.
 CONTENT_FIELDS = {"content", "body", "code", "playbook", "yaml", "text", "file_content"}
@@ -111,7 +126,30 @@ Regole:
     return {f: estratti[f] for f in fields if estratti.get(f)}
 
 
-async def resolve_tool_args(session, tool_name, state, args) -> tuple:
+_TOOL_SCHEMAS = {}
+
+
+async def get_tool_schemas(force: bool = False) -> dict:
+    """
+    Schemi dei tool del server, letti una volta sola per processo.
+
+    Serve a poter risolvere gli argomenti (e a chiedere l'approvazione umana) senza tenere
+    aperta una sessione stdio: interrupt() solleva un'eccezione per sospendere il grafo, e
+    farlo dentro il context manager della sessione la farebbe attraversare il task group di
+    anyio, che la incapsulerebbe in un ExceptionGroup rendendola irriconoscibile a LangGraph.
+    """
+    global _TOOL_SCHEMAS
+    if _TOOL_SCHEMAS and not force:
+        return _TOOL_SCHEMAS
+
+    async with mcp_session() as session:
+        tools = await session.list_tools()
+
+    _TOOL_SCHEMAS = {t.name: (t.inputSchema or {}) for t in tools.tools}
+    return _TOOL_SCHEMAS
+
+
+def resolve_tool_args(schema, tool_name, state, args) -> tuple:
     """
     Completa gli argomenti richiesti dal tool leggendo il suo inputSchema.
 
@@ -125,8 +163,6 @@ async def resolve_tool_args(session, tool_name, state, args) -> tuple:
     query = state.get("query", "")
     messages = state.get("messages", [])
 
-    tools = await session.list_tools()
-    schema = next((t.inputSchema or {} for t in tools.tools if t.name == tool_name), {})
     props = schema.get("properties", {}) or {}
     required = schema.get("required", []) or []
 
@@ -173,22 +209,54 @@ async def mcp_tool_node(state):
         if alias in args:
             args["query"] = args.pop(alias)
 
-    # Log critico per debuggare nel terminale di Streamlit
-    print(f"DEBUG: Cerco di invocare {tool_name} sul server...")
-
     try:
+        schemi = await get_tool_schemas()
+        args, mancanti = resolve_tool_args(schemi.get(tool_name, {}), tool_name, state, args)
+
+        if mancanti:
+            messaggio = (
+                f"Per usare {original_tool_name} mi manca: {', '.join(mancanti)}. "
+                "Puoi indicarmelo esplicitamente nella richiesta?"
+            )
+            print(f"⚠️  {messaggio}")
+            return {"final_answer": messaggio, "tool_result": messaggio}
+
+        print(f"DEBUG: argomenti risolti -> { {k: str(v)[:60] for k, v in args.items()} }")
+
+        # ── Human-in-the-loop ────────────────────────────────────────────────────────────
+        # I tool che modificano qualcosa fuori dall'app non partono senza un via libera umano.
+        if tool_name in APPROVAL_REQUIRED_TOOLS:
+            decisione = interrupt({
+                "tipo": "approvazione_tool",
+                "tool": tool_name,
+                "tool_originale": original_tool_name,
+                "args": args,
+                "descrizione": DESCRIZIONI_APPROVAZIONE.get(
+                    tool_name, f"Sto per eseguire `{tool_name}` sulla tua macchina."
+                ),
+            })
+
+            approvato = bool(decisione.get("approvato")) if isinstance(decisione, dict) else bool(decisione)
+            if not approvato:
+                nota = decisione.get("nota") if isinstance(decisione, dict) else None
+                messaggio = "Operazione annullata: non hai dato il via libera."
+                if nota:
+                    messaggio += f" Nota: {nota}"
+                print(f"🛑 {messaggio}")
+                return {
+                    "final_answer": messaggio,
+                    "tool_result": messaggio,
+                    "messages": [HumanMessage(content=messaggio, name=original_tool_name)],
+                }
+
+            # Si esegue esattamente cio' che e' stato mostrato e approvato, non una nuova
+            # risoluzione: il nodo viene rieseguito da capo alla ripresa e l'LLM potrebbe
+            # ricavare argomenti diversi da quelli che l'utente ha visto.
+            if isinstance(decisione, dict) and decisione.get("args"):
+                args = decisione["args"]
+            print(f"✅ Approvato: eseguo {tool_name} con { {k: str(v)[:60] for k, v in args.items()} }")
+
         async with mcp_session() as session:
-
-            args, mancanti = await resolve_tool_args(session, tool_name, state, args)
-            if mancanti:
-                messaggio = (
-                    f"Per usare {original_tool_name} mi manca: {', '.join(mancanti)}. "
-                    "Puoi indicarmelo esplicitamente nella richiesta?"
-                )
-                print(f"⚠️  {messaggio}")
-                return {"final_answer": messaggio, "tool_result": messaggio}
-
-            print(f"DEBUG: argomenti risolti -> { {k: str(v)[:60] for k, v in args.items()} }")
 
             # Esegui la chiamata al tool
             result = await session.call_tool(tool_name, args)
@@ -207,6 +275,10 @@ async def mcp_tool_node(state):
                 # Fondamentale: aggiungi un messaggio altrimenti il grafo non sa cosa è successo
                 "messages": [HumanMessage(content=output, name=original_tool_name)]
             }
+    except GraphBubbleUp:
+        # interrupt() sospende il grafo sollevando un'eccezione di controllo: va lasciata
+        # passare, altrimenti la richiesta di approvazione diventa un messaggio d'errore.
+        raise
     except Exception as e:
         print(f"❌ ERRORE MCP NODE: {str(e)}")
         return {"final_answer": f"Errore nel tool MCP: {str(e)}"}

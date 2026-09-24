@@ -11,8 +11,10 @@ LLM locale (`llama3` via Ollama). È il server usato dai tool `mcp_*` dell'app: 
 | `generate_ansible_playbook_tool` | `(query)` | Genera un playbook YAML da una richiesta in linguaggio naturale, in streaming da `llama3` |
 | `save_playbook_tool` | `(name, content)` | Salva il playbook in `ansible_memory/<name>.yml` |
 | `list_playbooks_tool` | `()` | Elenca i playbook in `ansible_memory/` |
-| `run_playbook_tool` | `(name)` | Esegue `ansible-playbook -i inventory.ini ansible_memory/<name>.yml` |
-| `bash_tool` ⚠️ | `(command)` | Esegue un comando bash arbitrario. **Registrato solo con `MCP_ENABLE_BASH=1`** |
+| `run_playbook_tool` 🛑 | `(name)` | Esegue `ansible-playbook -i inventory.ini ansible_memory/<name>.yml` |
+| `bash_tool` ⚠️🛑 | `(command)` | Esegue un comando bash arbitrario. **Registrato solo con `MCP_ENABLE_BASH=1`** |
+
+🛑 = richiede approvazione umana nella chat prima di essere eseguito (vedi [../../README.md](../../README.md#approvazione-umana-human-in-the-loop)).
 
 `bash_tool` non ha alcun filtro sui comandi: chiunque parli con questo server ottiene esecuzione di
 codice sulla macchina che lo ospita. Abilitalo solo consapevolmente, su una macchina di sviluppo.
