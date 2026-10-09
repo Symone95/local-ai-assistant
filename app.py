@@ -202,6 +202,10 @@ if query:
 
                 # Cerchiamo l'evento di streaming del modello chat
                 if event["event"] == "on_chat_model_stream":
+                    # Solo i nodi che producono la risposta finale (vedi app_with_mcp.py)
+                    if event["metadata"].get("langgraph_node") not in ("llm", "direct_llm_answer"):
+                        continue
+
                     content = event["data"]["chunk"].content
                     if content:
                         full_response += content

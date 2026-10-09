@@ -2,6 +2,8 @@ import re
 import chromadb
 from sentence_transformers import SentenceTransformer
 import ollama
+
+from llm_client import completa
 import logging
 from datetime import datetime
 
@@ -347,6 +349,20 @@ def rewrite_query_with_memory(query, chat_history):
     if not chat_history:
         return query
 
+    # La riscrittura serve solo se la domanda dipende da cio' che si e' detto prima: pronomi,
+    # dimostrativi, ellissi. Una domanda gia' autonoma non ha bisogno di un giro di LLM, che
+    # qui costerebbe qualche secondo prima ancora di iniziare a rispondere.
+    dipende_dal_contesto = re.search(
+        r"\b(lo|la|li|le|ne|ci|gli|quello|quella|quelli|quelle|questo|questa|questi|queste|"
+        r"esso|essa|suo|sua|loro|prima|sopra|precedente|stesso|stessa|anche|invece|e\s+se)\b",
+        query.lower(),
+    )
+    # Una frase breve che inizia con una congiunzione e' probabilmente ellittica ("e a Milano?"):
+    # quella va riscritta. Tutto il resto, se non contiene riferimenti, e' gia' autonomo.
+    ellittica = re.match(r"^\s*(e|ma|pero|però|quindi|allora|anche)\b", query.lower())
+    if not dipende_dal_contesto and not ellittica:
+        return query
+
     prompt = f"""
 Sei un sistema che riscrive domande per un motore di ricerca.
 
@@ -365,16 +381,7 @@ Domanda attuale:
 Domanda standalone:
 """
 
-    response = ollama.chat(
-        model="llama3",
-        messages=[{"role": "user", "content": prompt}]
-    )
-
-    rewritten = response["message"]["content"].strip()
-
-    # fallback sicurezza
-    if len(rewritten) < 5:
-        return query
+    return completa(prompt).strip()
 
     return rewritten
 

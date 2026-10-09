@@ -5,10 +5,8 @@ from dto.agent_state import AgentState
 import json
 import re
 
-from langchain_ollama import ChatOllama
-llm = ChatOllama(model="qwen2.5-coder:3b",  # llama3"
-                 num_ctx=4096,              # con questo dico di non andare oltre i 4k di token
-                )
+from langchain_core.messages import AIMessage
+from llm_client import llm
 
 
 KNOWN_TOOLS = {t["name"] for t in TOOLS}
@@ -83,6 +81,23 @@ def tool_node(state: AgentState):
     return {"tool_result": result, "current_file": result.get("current_file", "")}
 
 
+def rispondi_in_streaming(prompt: str):
+    """
+    Genera la risposta token per token invece di attenderla tutta.
+
+    Con `llm.invoke` il nodo resta fermo finche' il modello non ha finito: chi ascolta lo stream
+    (la chat e soprattutto la modalita' vocale) vede il primo token solo alla fine. Con `stream`
+    il primo token arriva in ~0,3s, e la voce puo' iniziare a parlare quasi subito.
+    """
+    pezzi = []
+    for chunk in llm.stream(prompt):
+        if chunk.content:
+            pezzi.append(chunk.content)
+
+    testo = "".join(pezzi)
+    return testo, AIMessage(content=testo)
+
+
 def direct_llm_answer(state: AgentState):
     """
     Risposta diretta senza usare tools o RAG.
@@ -120,11 +135,12 @@ Contesto temporaneo:
 {context if context else "(nessun file temporaneo caricato)"}
 
 Domanda attuale: {standalone_query}
+{state.get('stile', '')}
 """
-    response = llm.invoke(prompt)
+    testo, messaggio = rispondi_in_streaming(prompt)
     return {
-            "final_answer": response.content,
-            "messages": [response]
+            "final_answer": testo,
+            "messages": [messaggio]
         }
 
 
@@ -175,12 +191,13 @@ DOMANDA ATTUALE DELL'UTENTE:
 
 ---
 Rispondi ora fornendo una risposta chiara e completa, terminando SEMPRE con le fonti.
+{state.get('stile', '')}
 """
 
-    response = llm.invoke(prompt)
+    testo, messaggio = rispondi_in_streaming(prompt)
     return {
-            "final_answer": response.content,
-            "messages": [response]
+            "final_answer": testo,
+            "messages": [messaggio]
         }
 
 

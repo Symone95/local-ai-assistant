@@ -15,14 +15,8 @@ from pdf_loader import load_pdf
 import json
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
-from langchain_ollama import ChatOllama
+from llm_client import llm
 
-llm = ChatOllama(model="qwen2.5-coder:3b",  # llama3"
-                 num_ctx=4096,              # con questo dico di non andare oltre i 4k di token
-                 format="json",
-                 temperature=0.0,
-                 num_predict=-1
-                )
 
 def convert_to_langchain_messages(streamlit_messages):
     lc_messages = []

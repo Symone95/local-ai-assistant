@@ -56,7 +56,23 @@ playbook Ansible via MCP…).
   con la conferma, così una nuova risoluzione non può sostituirli.
 - La lista dei tool da approvare si cambia da `.env` con `MCP_APPROVAL_TOOLS`.
 
-### 🎙️ Voce, 👁️ immagini, 📂 file al volo
+### 🗣️ Conversazione vocale continua
+- **Un pulsante solo, all'inizio**: premi il microfono e la conversazione parte. Da lì in poi si
+  parla e basta: il turno si chiude da solo dopo ~0,6s di silenzio (rilevamento a energia, con
+  soglia calibrata sul rumore di fondo della stanza).
+- **Risposte brevi**: il grafo accetta istruzioni di stile e la modalità vocale chiede due o tre
+  frasi colloquiali, senza elenchi né simboli. A voce una risposta strutturata come quella della
+  chat scritta durerebbe un minuto.
+- **Risponde mentre sta ancora pensando**: la risposta viene pronunciata *frase per frase* man
+  mano che l'LLM la genera, invece di attendere il testo completo. Sulla macchina di sviluppo,
+  dalla fine del parlato alla prima parola pronunciata passa **~1,5–2s**.
+- **Barge-in** (spento di default): parlando sopra l'assistente lo si zittisce. Richiede le
+  cuffie — vedi i limiti più sotto.
+- **Approvazione a voce**: se il grafo chiede il via libera per un'azione sensibile, la domanda
+  arriva parlata e si risponde "sì" o "no".
+- Due interfacce sullo stesso motore: pannello nell'app Streamlit e CLI (`python -m voice.cli`).
+
+### 🎙️ Voce a turni, 👁️ immagini, 📂 file al volo
 - **Speech-to-text**: registrazione dal microfono e trascrizione locale con Whisper.
 - **Text-to-speech**: la risposta viene letta ad alta voce con `edge-tts` (voce italiana).
 - **Analisi immagini**: modello multimodale LLaVA in streaming, con doppio fallback OCR —
@@ -234,6 +250,159 @@ un errore viene dal server o dal routing dell'agente.
 
 ---
 
+## 🗣️ Modalità vocale
+
+Il pacchetto [voice/](voice/) implementa una conversazione parlata continua. Non dipende da
+Streamlit: riceve una funzione che, dato il testo dell'utente, produce i token della risposta.
+
+```
+in ascolto ──(silenzio > 800ms)──▶ trascrivo ──▶ penso ──▶ parlo ──┐
+     ▲                                                             │
+     └──────────────(fine risposta, oppure barge-in)───────────────┘
+```
+
+| Modulo | Ruolo |
+|---|---|
+| [voice/engine.py](voice/engine.py) | Macchina a stati, rilevamento del turno, taglio in frasi, barge-in |
+| [voice/sources.py](voice/sources.py) | Sorgente audio: microfono reale o array in memoria (per i test) |
+| [voice/stt.py](voice/stt.py) | Trascrizione con `faster-whisper` |
+| [voice/tts.py](voice/tts.py) | Sintesi `edge-tts` decodificata in memoria |
+| [voice/voce_sistema.py](voice/voce_sistema.py) | Sintesi con la voce di sistema macOS (`say`) — predefinita |
+| [voice/player.py](voice/player.py) | Riproduzione interrompibile |
+| [voice/agente.py](voice/agente.py) | Ponte verso il grafo, storia e approvazioni parlate |
+| [voice/cli.py](voice/cli.py) | Modalità da terminale |
+
+### Come si usa
+
+```bash
+# da terminale — la via più reattiva
+venv/bin/python -m voice.cli
+
+# oppure dall'app: premi 🎤 "Parla con l'assistente" sotto il titolo
+venv/bin/streamlit run app_with_mcp.py
+```
+
+Nell'app c'è **un solo comando vocale**: il pulsante del microfono avvia la conversazione e la
+chiude. Non è un push-to-talk — non va tenuto premuto, e non è lo stop a far partire la richiesta:
+si preme una volta, si parla quando compare 🎙️ *In ascolto*, e si continua a parlare finché serve.
+Mentre il pulsante mostra ⏳ *Preparo*, l'assistente sta caricando i modelli e misurando il rumore
+di fondo: parlare in quel momento non verrebbe sentito.
+
+### Perché sembra reattiva
+
+Il tempo percepito non è quello della risposta intera, ma quello della **prima frase**. La
+risposta viene quindi tagliata appena c'è una frase conclusa e mandata subito in sintesi, mentre
+il resto si sta ancora generando; la frase successiva si sintetizza mentre la precedente suona.
+
+Il taglio non spezza i numeri decimali (`24.79°C` resta una cosa sola) e i blocchi di codice non
+vengono letti: a voce diventano "ti ho scritto il codice nella chat".
+
+Perché le frasi suonino come un discorso unico e non a scatti servono due accorgimenti:
+
+- **I silenzi ai bordi vengono tagliati.** edge-tts consegna ogni frase con ~190ms di silenzio in
+  testa e ~870ms in coda: pronunciando una frase alla volta si sommano in pause di oltre un secondo
+  fra una e l'altra. [voice/tts.py](voice/tts.py) li rimuove lasciando 30ms di margine, per non
+  tagliare l'attacco delle consonanti.
+- **Lo stream di uscita resta aperto.** Aprire e chiudere il dispositivo audio a ogni frase
+  introduceva un'altra pausa fissa; [voice/player.py](voice/player.py) tiene lo stream vivo e lo
+  alimenta con un buffer, che serve anche al barge-in per zittire l'assistente all'istante.
+
+Su tre frasi consecutive il silenzio aggiunto passa da ~3,9s a **0,22s**.
+
+Arrivarci ha richiesto di togliere di mezzo quattro attese che nessuno vedeva, tutte misurate:
+
+| Causa | Prima | Dopo |
+|---|---|---|
+| **Prompt del router** da ~1150 token, rivalutato a ogni turno perché la cache di Ollama conserva solo l'ultimo contesto | 12,2s | ~1,0s |
+| **Convenevoli** che passavano dal router LLM: ora "ciao", "grazie", "chi sei" hanno una regola diretta | 13,4s | 0,00s |
+| **Nodi che usavano `llm.invoke`**: la risposta usciva tutta insieme a generazione finita, invece di token per token | 2,4s al primo token | 0,34s |
+| **Due client Ollama con opzioni diverse** (`ChatOllama(num_ctx=4096)` e `ollama.chat` con i default): il modello veniva ricaricato a ogni alternanza | ~1,8s per turno | 0s |
+
+Il quarto punto è il più insidioso: Ollama tiene in memoria **una** configurazione per modello, e
+chiamarlo con opzioni diverse da due punti del codice lo fa scaricare e ricaricare in continuazione.
+Per questo esiste [llm_client.py](llm_client.py): un solo client, condiviso da router, nodi e
+riscrittura delle query. La modalità vocale lo scalda all'avvio insieme al prompt del router,
+così il primo "ciao" non paga il caricamento.
+
+Misure sulla macchina di sviluppo (M-series, Ollama locale), a modelli caldi:
+
+| Fase | Tempo |
+|---|---|
+| Chiusura del turno dopo che smetti di parlare | ~0,3s |
+| Trascrizione (`faster-whisper small`) | 1,7–2,6s |
+| Router su convenevoli e comandi riconosciuti da regola | 0,00s |
+| Router quando decide l'LLM | ~1,0s |
+| Primo token della risposta | 0,3–2,9s (secondo il tool coinvolto) |
+| Sintesi della prima frase (`edge-tts`) | ~0,6s |
+
+Sommati, dalla fine del parlato alla prima parola pronunciata: **~3s** per una battuta di
+conversazione, **~8,7s** per una domanda che passa da un tool.
+
+> **Sulla scelta del modello di trascrizione.** Su audio sintetico pulito `base` sembra quattro
+> volte più veloce di `small`. Su microfono reale il confronto si ribalta: `base` produce testo
+> sbagliato e ci mette *di più* a convergere (2,8–6,0s contro 1,7–2,7s), perché fatica sul parlato
+> rumoroso. Il default è `small` — misurato su registrazioni vere, non su TTS.
+
+Due accorgimenti pesano sulla qualità di quel che viene capito:
+
+- **Pre-roll di 300ms.** L'audio veniva raccolto solo da quando l'energia supera la soglia, ma
+  l'attacco di una parola è più debole del resto: `"Ciao, che tempo fa Milano"` diventava
+  `"che tempo fa me lano"`. Ora i frame immediatamente precedenti vengono conservati e anteposti.
+- **Taglio della coda muta.** Davanti a mezzo secondo di silenzio Whisper inventa parole
+  (`"Eh... no... Poi mi marzi"`), che poi mandano fuori strada il router. L'audio viene chiuso
+  sull'ultimo frame con voce vera, più 250ms.
+
+### Due motori di sintesi
+
+| Backend | Quando conviene |
+|---|---|
+| **`say`** (predefinito su macOS) | Voce di sistema. Parla un processo del sistema operativo: niente rete, niente decodifica mp3, nessun codice Python nel percorso audio. È la scelta robusta: non può andare a scatti. |
+| `edge` | Voci neurali di edge-tts, più naturali. Passa dal player Python, che sotto carico può restare indietro e far ripetere l'ultimo blocco alla scheda audio. |
+
+```bash
+VOICE_TTS_BACKEND=say      # oppure "edge"
+VOICE_SAY_VOICE=Alice      # voci italiane: Alice, Eddy, Flo, Grandma, Grandpa…
+```
+
+Con `say` si risparmiano anche ~1,9s all'avvio, perché non serve aprire in anticipo il
+dispositivo audio.
+
+### Se non ti sente
+
+Mentre è in ascolto il pannello mostra il **livello del microfono** e la soglia calcolata, perché
+"In ascolto" da solo non distingue un microfono muto da una soglia troppo alta:
+
+```
+🎙️ In ascolto
+▓▓▓▓▓░░░░░░░░░░
+Livello microfono 0.0008 · soglia 0.0060 → silenzio
+```
+
+| Cosa vedi | Causa | Rimedio |
+|---|---|---|
+| 🔇 "Dal microfono non arriva alcun segnale" | Il processo non ha accesso al microfono: su macOS `sounddevice` apre lo stream senza errori e riceve zeri | Impostazioni di Sistema → Privacy e sicurezza → Microfono: autorizza il terminale (o l'IDE) da cui lanci l'app, poi riavviala |
+| Il livello si muove ma resta sotto soglia | Voce lontana o ambiente rumoroso: la soglia è il rumore di fondo × `VOICE_VAD_FACTOR` | Abbassa `VOICE_VAD_FACTOR` (da 3.0 a 2.0) nel `.env` |
+| Risponde a se stesso | Sente la propria voce dagli altoparlanti (nessuna cancellazione d'eco) | Usa le cuffie, o alza `VOICE_COOLDOWN_MS` |
+
+### Limiti da conoscere
+
+- **L'audio è catturato lato server** con `sounddevice`, quindi funziona quando l'app gira sulla
+  stessa macchina che ascolta — che è il caso d'uso di questo progetto. Per un uso da remoto
+  servirebbe l'audio del browser (WebRTC).
+- **Il barge-in è spento di default**, perché non c'è cancellazione d'eco. Misurando quanto il
+  microfono sente la voce dell'assistente dagli altoparlanti, il 13% dei frame supera già la soglia
+  di interruzione: basta poco (volume più alto, microfono più vicino) perché si auto-inneschi,
+  spezzando la risposta a metà e facendola sembrare ripetuta. Con le cuffie si riattiva con
+  `VOICE_BARGE_IN=1`.
+- **Con il backend `edge` lo stream di uscita usa blocchi grandi** (2048 frame, 131ms di latenza). Il callback che
+  alimenta la scheda audio è codice Python: mentre il modello genera e la sintesi decodifica, può
+  restare indietro di oltre 200ms, e il dispositivo a secco ripete l'ultimo blocco — si sente come
+  un'eco. Con il buffer ampio gli stalli misurati sotto carico passano da 7 a zero.
+- Il pannello Streamlit si aggiorna con un `st.fragment(run_every=0.5)`: lo stato mostrato può
+  essere indietro di mezzo secondo rispetto a quello che si sente.
+
+---
+
 ## Struttura del progetto
 
 | Percorso | Contenuto |
@@ -246,6 +415,9 @@ un errore viene dal server o dal routing dell'agente.
 | [pdf_loader.py](pdf_loader.py) | Estrazione, pulizia e chunking del testo dai PDF |
 | [mcp_integration/client.py](mcp_integration/client.py) | Client MCP su stdio e nodo `mcp_tool` |
 | [mcp_integration/servers/](mcp_integration/servers/) | Server MCP inclusi nel progetto (oggi: `devops_ansible`) |
+| [agent_graph.py](agent_graph.py) | Costruzione del grafo, condivisa fra app Streamlit e modalità vocale |
+| [llm_client.py](llm_client.py) | Client Ollama condiviso: una sola configurazione, niente ricaricamenti |
+| [voice/](voice/) | Conversazione vocale continua (motore, STT, TTS, CLI) |
 | [dto/managers/](dto/managers/) | Manager per radio, meteo, terminale e ricerca internet |
 | [utils/general.py](utils/general.py) | PDF report, parsing dei blocchi di codice, utility varie |
 | [utils/speech_to_text.py](utils/speech_to_text.py), [utils/text_to_speech.py](utils/text_to_speech.py) | Whisper e edge-tts |
@@ -260,7 +432,7 @@ un errore viene dal server o dal routing dell'agente.
 - Python 3.11+
 - [Ollama](https://ollama.com) in esecuzione in locale, con i modelli usati dal progetto:
   ```bash
-  ollama pull qwen2.5-coder:3b   # router e risposte
+  ollama pull llama3.2:3b        # router e risposte
   ollama pull llama3             # riassunti, reranking, report
   ollama pull llava-llama3       # analisi immagini (in alternativa: llava)
   ```

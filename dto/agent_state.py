@@ -12,3 +12,4 @@ class AgentState(TypedDict):
     tool_plan: Dict
     tool_result: Dict
     final_answer: str
+    stile: str   # istruzioni sullo stile della risposta (es. modalita' vocale)

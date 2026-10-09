@@ -3,7 +3,6 @@ import re
 import sys
 from pathlib import Path
 
-import ollama
 
 from mcp.client.stdio import stdio_client, StdioServerParameters
 from mcp import ClientSession
@@ -13,6 +12,7 @@ from langgraph.errors import GraphBubbleUp
 from langgraph.types import interrupt
 
 from dto.agent_state import AgentState
+from llm_client import completa
 from utils.general import extract_code_block, clean_code_content, loads_json_loose
 
 # Path assoluti: cosi' l'MCP funziona anche se Streamlit viene lanciato da un'altra directory.
@@ -117,8 +117,8 @@ Regole:
 """
 
     try:
-        response = ollama.chat(model="qwen2.5-coder:3b", messages=[{"role": "user", "content": prompt}])
-        estratti = loads_json_loose(response["message"]["content"]) or {}
+        # Stesso client condiviso del resto del progetto: un modello solo, nessun ricaricamento.
+        estratti = loads_json_loose(completa(prompt)) or {}
     except Exception as e:
         print(f"⚠️  Estrazione argomenti fallita: {e}")
         return {}

@@ -1,5 +1,7 @@
 import json
 import ollama
+
+from llm_client import completa
 import re
 from rag_engine import get_files_with_upload_date_tool, get_files_in_db_tool, conversational_search_tool, \
     summarize_document_tool, extract_filename_from_query, generate_report_content
@@ -57,6 +59,11 @@ TOOLS = [
         "name": "mcp_save_playbook_tool",
         "description": "Salva playbook ansible",
         "input": "name, content"
+    },
+    {
+        "name": "crypto_analyzer_tool",
+        "description": "Analisi finanziaria di una criptovaluta: dati di mercato in tempo reale piu' notizie recenti",
+        "input": "nome della criptovaluta"
     },
     ## Strumento per gestione radio
     {
@@ -270,10 +277,38 @@ def execute_tool(tool_name: str, query: str = None, selected_doc=None, messages=
     return {"error": "Tool non trovato"}
 
 
+# Parole che, da sole, compongono un convenevolo: se la frase contiene solo queste, non serve
+# alcun tool. Basta una parola fuori elenco perche' la domanda segua il percorso normale.
+PAROLE_CONVENEVOLI = {
+    "ciao", "ehi", "hey", "salve", "buongiorno", "buonasera", "buonanotte", "arrivederci",
+    "come", "stai", "va", "tutto", "bene", "grazie", "mille", "prego", "perfetto", "ottimo",
+    "ok", "okay", "d", "accordo", "a", "dopo", "presto", "ci", "vediamo", "chi", "sei", "ti",
+    "chiami", "cosa", "che", "sai", "fare", "mi", "senti", "puoi", "aiutarmi", "e", "tu",
+}
+
+
 def tool_planner(query, messages=None, context=""):
     
     if query:
-        query_lower = query.lower()
+        query_lower = query.lower().strip()
+
+        # Convenevoli e domande sull'assistente: nessun tool serve, e soprattutto non serve
+        # interpellare il router LLM, che su questo prompt costa qualche secondo.
+        # La scorciatoia scatta solo se la frase e' FATTA SOLO di convenevoli: "ciao" passa di
+        # qui, "ciao, che tempo fa a Milano?" no, altrimenti il saluto iniziale nasconderebbe
+        # la richiesta vera.
+        parole = re.findall(r"\w+", query_lower)
+        if parole and all(parola in PAROLE_CONVENEVOLI for parola in parole):
+            return json.dumps({"tool": "none"})
+
+        # Richieste creative o di spiegazione generale: nessun tool. Si escludono le query che
+        # nominano un file, che vanno invece al terminal_tool.
+        if not re.search(r"\.\w{1,4}\b", query_lower) and re.match(
+            r"^(raccontami|racconta|inventa|inventami|scrivimi una (poesia|storia|canzone|filastrocca)|"
+            r"fammi una battuta|dimmi una barzelletta|indovinello)\b",
+            query_lower,
+        ):
+            return json.dumps({"tool": "none"})
 
         # Ansible/MCP: prima delle altre regole, perche' "genera un playbook" verrebbe
         # altrimenti intercettato da generate_pdf_report e "playbook.yml" da terminal_tool.
@@ -370,97 +405,39 @@ CONTESTO CONVERSAZIONALE PRECEDENTE:
     else:
         file_section = "\nNessun file temporaneo caricato.\n"
 
-    prompt = f"""
-Sei un AI che decide quale tool usare. Analizza la DOMANDA ATTUALE considerando il contesto e il contenuto del file temporaneo, se presente.
+    # Prompt volutamente compatto: viene rivalutato a ogni turno (la cache di Ollama conserva
+    # solo l'ultimo contesto, che nel frattempo e' quello della risposta). Ogni migliaio di token
+    # in piu' qui sono secondi di attesa prima che l'assistente cominci a rispondere.
+    prompt = f"""Scegli UN tool per la domanda dell'utente, o "none" se non ne serve nessuno.
 
-{context_section}
-
-{file_section}
-
-Se è presente un file temporaneo caricato e la domanda riguarda quel file, usa preferibilmente lo strumento "search_documents" per interrogare il contenuto del file temporaneo.
-Non rispondere direttamente con DLA quando la richiesta chiede di analizzare o spiegare il file caricato.
-Parole chiave da considerare: "file caricato", "questo file", "file temporaneo", "file allegato", "nel file", "contenuto del file", "cosa fa il file", "descrivi il file", "cosa contiene il file", "analizza il file".
-
-Tools disponibili:
+TOOL:
 {tools_description}
 
-STRATEGIA DI DECISIONE:
+REGOLE:
+1. Informazioni che cambiano nel tempo (notizie, prezzi, risultati, eventi, "oggi/adesso/ultime")
+   → internet_search_tool
+2. Domanda sui documenti caricati o sul file temporaneo → search_documents;
+   quali documenti ci sono → list_documents; quando sono stati caricati → get_upload_dates;
+   riassunto esplicito di un documento → summarize_document
+3. Richiesta esplicita di un report o di un PDF → generate_pdf_report
+4. Ansible, playbook, deploy, infrastruttura → il corrispondente tool mcp_*
+5. File del progetto o codice da leggere/spiegare/modificare → terminal_tool
+6. Meteo → meteo_tool; radio → radio_tool; criptovalute → crypto_analyzer_tool
+7. Conversazione, spiegazioni di concetti stabili, domande sul file gia' caricato,
+   creativita' (storie, poesie, battute) → "none"
 
-STEP 1 — CONTROLLA PRIMA SE LA DOMANDA RICHIEDE INTERNET (PRIORITÀ MASSIMA):
-Chiediti: "Questa informazione cambia nel tempo? Un AI addestrato nel 2024 potrebbe non saperla?"
-Se SÌ → usa SEMPRE internet_search_tool, INDIPENDENTEMENTE dalle altre keyword.
+{context_section}
+{file_section}
 
-Esempi che richiedono SEMPRE internet_search_tool:
-- "che eventi ci saranno a [città] questo weekend/settimana/mese"
-- "qual è il prezzo di [asset] oggi/adesso"
-- "ultime notizie su [argomento]"
-- "chi ha vinto [partita/gara] ieri/oggi"
-- "cosa succede a [luogo] in questo periodo"
-- "versione più recente di [software]"
-- Qualsiasi domanda con: "questo weekend", "questa settimana", "oggi", "domani", "adesso", "attualmente", "ultimamente", "di recente" + fatto concreto del mondo reale
-
-STEP 2 — SE NON È UNA DOMANDA PER INTERNET, usa questi criteri (scegli SOLO uno):
-
-   a) ANSIBLE/INFRASTRUCTURE (→ tool MCP):
-      - Keyword: "playbook", "ansible", "server", "installazione", "configurazione", "deploy", "infra", "docker", "DevOps"
-      - Usa: mcp_generate_ansible_playbook_tool, mcp_list_playbooks_tool, mcp_run_playbook_tool, mcp_save_playbook_tool
-
-   b) DOCUMENT SEARCH (→ search_documents):
-      - Quando: l'utente chiede informazioni che potrebbero essere contenute nei documenti caricati
-      - Keyword tipiche: "nei documenti", "nel database", "cosa dicono i file", "cerca nel tuo DB"
-      - NON usare per: eventi reali, notizie, prezzi, fatti del mondo esterno
-
-   c) DOCUMENT LISTING (→ list_documents):
-      - Keyword: "quali documenti", "elenco", "lista", "quanti file", "cosa c'è", "quali file"
-      - Quando: chiede quali documenti sono disponibili nel database
-
-   d) DOCUMENT DATES (→ get_upload_dates):
-      - Keyword: "quando", "data", "caricato", "upload", "timestamp"
-      - Quando: chiede date di caricamento
-
-   e) DOCUMENT SUMMARY (→ summarize_document):
-      - Keyword: "riassunto", "riassunti", "summary", "summarize", "resume di"
-      - Usare SOLO se ESPLICITAMENTE richiesto
-
-   f) PDF REPORT GENERATION (→ generate_pdf_report):
-      - Keyword: "un pdf", "un report", "genera report", "report pdf", "crea report", "genera documento", "report su"
-      - Quando: chiede un report PDF
-
-   g) RADIO (→ radio_tool):
-      - Keyword: "radio", "stazione", "ascolta", "ascoltare", "metti la radio", "riproduci radio", "Radio105", "RTL 102.5"
-      - Quando: l'utente vuole ascoltare una radio o gestire le stazioni radio
-
-   h) METEO (→ meteo_tool):
-      - Keyword: "meteo", "tempo", "previsioni", "pioggia", "sole", "neve", "temperatura"
-      - Quando: l'utente vuole conoscere le condizioni meteorologiche di una città
-
-   i) FILESYSTEM / CODICE (→ terminal_tool):
-      - Keyword: nomi di file con estensione (.py, .js, .ts, .yaml, ecc.), "mostrami il codice", "leggi il file", "analizza il file", "rifattorizza", "refactor", "cosa fa", "spiega questo file", "apri", "visualizza"
-      - Quando: l'utente menziona un file specifico del progetto o vuole leggerne/analizzarne il codice
-
-   j) NESSUN TOOL (→ "none"):
-      - Conversazioni, saluti, domande generiche, spiegazioni di concetti stabili e immutabili
-      - Domande che richiedono di descrivere, spiegare, riassumere o analizzare il file temporaneo caricato
-      - Fatti storici consolidati che non cambiano nel tempo (es: "chi era Napoleone", "cos'è la fotosintesi")
-
-REGOLE IMPORTANTI:
-- Se è presente un file temporaneo e la domanda parla esplicitamente del file caricato, preferisci "none" e rispondi direttamente usando il contenuto del file
-- In caso di dubbio tra search_documents e internet_search_tool: se la risposta potrebbe cambiare domani → internet_search_tool
-- Rispondi SOLO in JSON valido, senza spiegazioni extra
-
-OUTPUT JSON:
-- Se serve tool: {{"tool": "nome_tool", "query": "query_da_passare", "params": {{}}}}
-- Se nessun tool: {{"tool": "none"}}
+Rispondi SOLO con JSON, senza testo attorno:
+{{"tool": "nome_tool", "query": "{query}"}}  oppure  {{"tool": "none"}}
 
 Domanda attuale: {query}
 """
 
-    response = ollama.chat(
-        model="qwen2.5-coder:3b", #"llama3",
-        messages=[{"role": "user", "content": prompt}]
-    )
-
-    return response["message"]["content"]
+    # Client condiviso: vedi llm_client.py — usare qui un client diverso farebbe ricaricare
+    # il modello a ogni alternanza fra router e nodi di risposta.
+    return completa(prompt)
 
 
 def _ocr_with_trocr(image_path: str, mcp_log_placeholder=None) -> str:

@@ -131,3 +131,8 @@ edge-tts==7.2.8
 openai-whisper==20250625
 langchain-community==0.4.2
 duckduckgo-search==8.1.1
+
+# Modalità vocale continua (voice/)
+sounddevice==0.5.5
+soundfile==0.13.1
+faster-whisper==1.2.1

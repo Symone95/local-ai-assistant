@@ -9,15 +9,15 @@ import asyncio
 import json
 import uuid
 from nodes import *
-from langgraph.graph import StateGraph, END
+from agent_graph import build_graph
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 from langchain_core.messages import HumanMessage
 
-from streamlit_mic_recorder import mic_recorder
 from dto.managers.radio_manager import radio_manager
-from utils.speech_to_text import transcribe_audio
 from utils.text_to_speech import generate_tts
+from voice.agente import AgenteVocale
+from voice.engine import ottieni_motore
 
 # TODO: FAR GENERARE DOCUMENTI, FAR RISPONDERE IN MARKDOWN
 
@@ -31,63 +31,8 @@ os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 # - lo stato = un dizionario che viaggia tra i nodi (AgentState)
 # - gli edge = decidono chi viene eseguito dopo(le relazioni tra i nodi)
 
-# Istanzio l'oggetto Grafo che ha come parametro lo stato il quale verrà utilizzato dai vari nodi / edge
-graph = StateGraph(AgentState)
+graph = build_graph()
 
-# Qui registro tutti i nodi che saranno presenti sul grafo con id e funzione associata
-graph.add_node("router", router_node)
-graph.add_node("tool", tool_node)
-graph.add_node("direct_llm_answer", direct_llm_answer)
-graph.add_node("llm", llm_node)
-graph.add_node("mcp_tool", mcp_tool_node)
-
-def decide_path(state: AgentState):
-    """
-    Funzione per decidere quale sarà la funzione chiamata successivamente al nodo eseguito
-    """
-    tool = state["tool_plan"]["tool"].strip()
-
-    if tool == "none":
-        return "direct_llm_answer"
-
-    if tool.startswith("mcp_"):
-        return "mcp_tool"
-
-    return "tool"
-
-# Qui diciamo che deve iniziare da questo nodo con id "router"
-graph.set_entry_point("router")
-# Qui stiamo praticamente dicendo:
-# - Dopo aver eseguito il nodo router, chiama decide_path(state).
-# - La funzione restituisce una stringa.
-# - Usa quella stringa per decidere il prossimo nodo.
-#              router
-#         /             \
-# direct_llm_answer     tool
-graph.add_conditional_edges(
-    "router",
-    decide_path,
-    {
-        "tool": "tool",
-        "mcp_tool": "mcp_tool",
-        "direct_llm_answer": "direct_llm_answer"
-    }
-)
-
-graph.add_edge("tool", "llm")
-graph.add_edge("mcp_tool", "llm")
-graph.add_edge("llm", END)
-graph.add_edge("direct_llm_answer", END)
-
-
-# Diagramma aggiornato:
-#               router
-#          /      |      \
-#       tool  mcp_tool   direct_llm_answer
-#         \     /               |
-#           llm                END
-#            |
-#           END
 
 @st.cache_resource
 def compile_app():
@@ -104,17 +49,62 @@ app = compile_app()
 ## FE
 st.set_page_config(page_title="Local AI Assistant", layout="wide")  # Titolo del tab
 
-# TODO: INTEGRARE QUESTA PARTE PER CONVERSARE DIRETTAMENTE CON LLM
-#if "assistant_speaking" not in st.session_state:
-#    st.session_state.assistant_speaking = False
+# --- 🎙️ Modalità vocale continua ---------------------------------------------------------
+# Il motore gira in un thread suo (vedi voice/engine.py) e non tocca Streamlit: la UI si limita
+# a leggerne lo stato. Va in cache perché Streamlit rilancia lo script a ogni interazione e il
+# thread non deve ripartire da zero ogni volta.
+@st.cache_resource
+def get_voice_engine():
+    # ottieni_motore() tiene l'istanza a livello di modulo: anche se Streamlit invalidasse
+    # questa cache, non nascerebbe un secondo motore che parla sopra il primo.
+    agente = AgenteVocale()
+    return ottieni_motore(agente.rispondi)
 
-#if "voice_mode" not in st.session_state:
-#    st.session_state.voice_mode = False
 
-#st.session_state.voice_mode = st.toggle(
-#    "🎙️ Modalità conversazione vocale continua",
-#    value=st.session_state.voice_mode
-#)
+voice_engine = get_voice_engine()
+
+
+@st.fragment(run_every=0.5)
+def pannello_vocale():
+    """Si aggiorna da solo mezzo secondo alla volta, senza rieseguire tutta la pagina."""
+    stato = voice_engine.snapshot()
+    if not stato.attivo:
+        return
+
+    icone = {"preparo": "⏳", "in ascolto": "🎙️", "trascrivo": "🔤", "penso": "🤔", "parlo": "🗣️"}
+    with st.container(border=True):
+        st.markdown(f"### {icone.get(stato.fase, '•')} {stato.fase.capitalize()}")
+        if stato.fase == "preparo":
+            st.caption("Carico i modelli e misuro il rumore di fondo: aspetta il microfono prima di parlare.")
+
+        # Livello del microfono: rende visibile se l'audio arriva e se supera la soglia.
+        if stato.fase == "in ascolto":
+            if stato.microfono_muto:
+                st.error(
+                    "🔇 Dal microfono non arriva alcun segnale. Controlla che il terminale da cui "
+                    "hai avviato l'app abbia il permesso di usare il microfono "
+                    "(Impostazioni di Sistema → Privacy e sicurezza → Microfono) e che sia "
+                    "selezionato il dispositivo giusto."
+                )
+            else:
+                scala = max(stato.soglia * 3, 0.02)
+                st.progress(min(stato.livello / scala, 1.0))
+                stato_voce = "parlato rilevato" if stato.livello > stato.soglia else "silenzio"
+                st.caption(
+                    f"Livello microfono {stato.livello:.4f} · soglia {stato.soglia:.4f} → {stato_voce}. "
+                    "Se parli e il livello resta sotto soglia, abbassa VOICE_VAD_FACTOR nel .env."
+                )
+        if stato.trascrizione:
+            st.markdown(f"**Tu:** {stato.trascrizione}")
+        if stato.risposta:
+            st.markdown(f"**Assistente:** {stato.risposta}")
+        if stato.errore:
+            st.error(stato.errore)
+        if stato.turni:
+            with st.expander(f"Turni precedenti ({len(stato.turni)})"):
+                for domanda, risposta in reversed(stato.turni[:-1] or ()):
+                    st.markdown(f"- **Tu:** {domanda}\n- **Assistente:** {risposta}")
+
 
 st.sidebar.header("🗄️ Database")  # Titolo sidebar a sinistra
 
@@ -145,14 +135,24 @@ if st.sidebar.button("🗑️ Reset database"):
 
 st.title("🤖 Local AI Assistant") #  (Ollama + ChromaDB + LangGraph)
 
-st.write("🎙️ Usa il microfono per dettare la tua domanda.")
-audio = mic_recorder(
-    start_prompt="🎤 Inizia a parlare",
-    stop_prompt="⏹️ Stop",
-    just_once=True,
-    use_container_width=True,
-    key="mic_header"
-)
+# Un solo comando per la voce: premere il microfono avvia la conversazione (non la chiude,
+# come faceva il vecchio push-to-talk, che trascriveva solo allo stop).
+stato_vocale = voice_engine.snapshot()
+
+if stato_vocale.attivo:
+    if st.button("⏹️ Chiudi la conversazione vocale", use_container_width=True):
+        voice_engine.stop()
+        st.rerun()
+else:
+    if st.button("🎤 Parla con l'assistente", use_container_width=True, type="primary"):
+        voice_engine.start()
+        st.rerun()
+    st.caption(
+        "Premi e parla liberamente: non serve tenere premuto nulla. Il turno si chiude da solo "
+        "dopo un attimo di silenzio e l'assistente risponde a voce. Oppure scrivi qui sotto."
+    )
+
+pannello_vocale()
 
 # --- Sidebar Upload PDF ---
 st.sidebar.header("📄 Carica documento")
@@ -317,10 +317,6 @@ if richiesta and "hitl_decisione" not in st.session_state:
 # Input utente
 query = st.chat_input("Fai una domanda sui documenti o usa il file uploader temporaneo qui sopra", key="chat_input")
 
-if audio:
-    with st.spinner("Trascrizione vocale..."):
-        query = f"🎤 {transcribe_audio(audio['bytes'])}"
-
 # Una decisione presa sul pannello di approvazione riprende il grafo invece di iniziare un giro nuovo
 decisione_hitl = st.session_state.pop("hitl_decisione", None)
 in_ripresa = decisione_hitl is not None
@@ -445,8 +441,12 @@ if query or in_ripresa:
 
                 # ── ✍️ STREAMING DEL TESTO DELL'LLM ──
                 if event["event"] == "on_chat_model_stream":
-                    # Appena l'LLM comincia a rispondere, puliamo i widget dell'MCP per non sporcare la chat
-                    
+                    # Solo i nodi che producono la risposta finale: gli altri usano l'LLM per
+                    # lavoro interno (estrazione citta', riscrittura query, reranking) e i loro
+                    # token non devono finire nella chat.
+                    if event["metadata"].get("langgraph_node") not in ("llm", "direct_llm_answer"):
+                        continue
+
                     content = event["data"]["chunk"].content
                     if content:
                         full_response += content
